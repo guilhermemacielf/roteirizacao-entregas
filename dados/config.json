@@ -1,0 +1,18 @@
+{
+  "_comentario": "CD + entregadores disponíveis. Coords de exemplo na região de BH. Ajuste pros endereços reais. 'disponivel: false' tira o entregador da roteirização do dia.",
+  "cd": {
+    "nome": "Centro de Distribuição",
+    "lat": -19.92000,
+    "lng": -43.94000
+  },
+  "entregadores": [
+    { "id": "E1", "nome": "Carlos",   "lat": -19.86800, "lng": -43.96200, "disponivel": true },
+    { "id": "E2", "nome": "Daniel",   "lat": -19.88500, "lng": -43.90500, "disponivel": true },
+    { "id": "E3", "nome": "Eduardo",  "lat": -19.94800, "lng": -43.91800, "disponivel": true },
+    { "id": "E4", "nome": "Fernanda", "lat": -19.97200, "lng": -43.95500, "disponivel": true },
+    { "id": "E5", "nome": "Gabriel",  "lat": -19.95500, "lng": -44.00200, "disponivel": true },
+    { "id": "E6", "nome": "Helena",   "lat": -19.90200, "lng": -44.02500, "disponivel": true },
+    { "id": "E7", "nome": "Igor",     "lat": -19.91800, "lng": -43.88000, "disponivel": true },
+    { "id": "E8", "nome": "Juliana",  "lat": -19.99500, "lng": -43.92000, "disponivel": true }
+  ]
+}
