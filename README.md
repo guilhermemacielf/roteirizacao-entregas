@@ -30,11 +30,22 @@ OR-Tools (o otimizador) sempre foi grátis — nunca foi a fonte do custo.
 
 ```bash
 pip install -r requirements.txt
-python -m motor.cli dados/exemplo_entregas.csv
 ```
 
-Opções:
+### UI web (recomendado)
+
 ```bash
+python app.py
+```
+Abre em `http://localhost:5000`. Sobe o CSV de entregas (ou usa o exemplo),
+marca os entregadores disponíveis no dia, ajusta os parâmetros e clica em
+Roteirizar — as rotas aparecem numa lista e no mapa (OpenStreetMap), com
+exportação de CSV.
+
+### CLI
+
+```bash
+python -m motor.cli dados/exemplo_entregas.csv
 python -m motor.cli dados/exemplo_entregas.csv --export saida/rotas.csv
 python -m motor.cli dados/exemplo_entregas.csv --min 10 --max 18 --tempo 60
 python -m motor.cli dados/exemplo_entregas.csv --config dados/config.json
@@ -49,12 +60,15 @@ export OSRM_URL=http://seu-osrm:5000
 ## Estrutura
 
 ```
+app.py             # UI web (Flask) — serve a interface + API que roda o motor
+static/
+└── index.html     # interface single-page com mapa Leaflet
 motor/
 ├── modelos.py     # dataclasses: Entrega, Entregador, CD, Rota, Parada
 ├── matriz.py      # cliente OSRM — matriz de distância/tempo
 ├── roteirizar.py  # CVRP com OR-Tools (agrupa + atribui + ordena)
-├── io.py          # parse de CSV/JSON + formatação da saída
-└── cli.py         # entry point
+├── io.py          # parse de CSV/JSON, serializer de rotas, formatação
+└── cli.py         # entry point CLI
 dados/
 ├── config.json            # CD + cadastro de entregadores
 └── exemplo_entregas.csv    # 36 entregas de exemplo (região BH)
@@ -72,5 +86,10 @@ janela_fim` opcionais (janelas em minutos desde o início da roteirização).
 
 ## Status
 
-v1 em construção — motor puro (entra CSV, sai rotas). Próximas etapas:
-geocoding com cache, camada Lalamove (rotas curtas perto do CD), UI web.
+- ✅ Motor (CVRP OR-Tools + matriz OSRM) — entra CSV, sai rotas.
+- ✅ UI web (`app.py` + `static/index.html`) — upload de CSV, toggles de
+  entregadores, parâmetros, rotas no mapa e export.
+
+Próximas etapas: geocoding (endereço → lat/lng) com cache, camada Lalamove
+(rotas curtas perto do CD quando faltam entregadores), OSRM self-hosted pra
+produção (>100 pontos), geometria real das ruas no mapa.

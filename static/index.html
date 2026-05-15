@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Roteirização de Entregas</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<style>
+  :root{
+    --bg:#f4f5f7; --surface:#fff; --border:#e2e4e8; --text:#1f2430;
+    --muted:#6b7280; --hint:#9ca3af; --azul:#2563eb; --verde:#16a34a;
+    --vermelho:#dc2626; --amber:#d97706; --surface2:#f9fafb;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);
+    color:var(--text);font-size:14px;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+  header{background:var(--surface);border-bottom:1px solid var(--border);
+    padding:12px 20px;display:flex;align-items:center;gap:12px;flex-shrink:0}
+  header h1{font-size:16px;font-weight:600}
+  header .sub{font-size:12px;color:var(--muted)}
+  .layout{flex:1;display:flex;overflow:hidden}
+  .sidebar{width:360px;flex-shrink:0;background:var(--surface);
+    border-right:1px solid var(--border);overflow-y:auto;padding:16px}
+  .mapwrap{flex:1;position:relative}
+  #map{position:absolute;inset:0}
+  .secao{margin-bottom:18px}
+  .secao-tit{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+    color:var(--muted);margin-bottom:8px}
+  .btn{border:1px solid var(--border);background:var(--surface);border-radius:7px;
+    padding:7px 12px;font-size:13px;cursor:pointer;font-family:inherit}
+  .btn:hover{background:var(--surface2)}
+  .btn-azul{background:var(--azul);color:#fff;border-color:var(--azul);font-weight:600}
+  .btn-azul:hover{filter:brightness(1.08)}
+  .btn-azul:disabled{opacity:.5;cursor:not-allowed;filter:none}
+  .btn-sm{padding:4px 9px;font-size:12px}
+  .linha{display:flex;gap:8px;align-items:center}
+  .campo{margin-bottom:8px}
+  .campo label{display:block;font-size:12px;color:var(--muted);margin-bottom:3px}
+  .campo input[type=number]{width:100%;padding:6px 8px;border:1px solid var(--border);
+    border-radius:6px;font-family:inherit;font-size:13px}
+  .info{font-size:12px;color:var(--muted);background:var(--surface2);
+    border:1px solid var(--border);border-radius:6px;padding:8px 10px}
+  .ent-item{display:flex;align-items:center;gap:8px;padding:5px 6px;border-radius:6px;font-size:13px}
+  .ent-item:hover{background:var(--surface2)}
+  .ent-item input{cursor:pointer}
+  .ent-item .nm{flex:1}
+  .ent-item .dot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
+  .resumo{display:flex;gap:14px;flex-wrap:wrap;background:var(--surface2);
+    border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:14px}
+  .resumo .m{font-size:12px;color:var(--muted)}
+  .resumo .m b{display:block;font-size:17px;color:var(--text);font-weight:700}
+  .aviso{background:#fef3c7;border:1px solid #f5d27a;color:#92400e;
+    border-radius:6px;padding:7px 10px;font-size:12px;margin-bottom:10px}
+  .erro{background:#fde7e7;border:1px solid #f3b4b4;color:#9a1c1c;
+    border-radius:6px;padding:8px 11px;font-size:13px;margin-bottom:10px}
+  .falhas{background:#fef3c7;border:1px solid #f5d27a;color:#92400e;
+    border-radius:6px;padding:8px 10px;font-size:12px;margin-top:8px;max-height:140px;overflow-y:auto}
+  .falhas b{display:block;margin-bottom:4px}
+  .falhas .fl{padding:2px 0;border-bottom:1px dashed rgba(146,64,14,.25)}
+  .falhas .fl:last-child{border-bottom:0}
+  .url-row{display:flex;gap:6px;margin-bottom:8px}
+  .url-row input[type=text]{flex:1;padding:6px 8px;border:1px solid var(--border);
+    border-radius:6px;font-family:inherit;font-size:12px;min-width:0}
+  .rota-card{border:1px solid var(--border);border-radius:8px;margin-bottom:8px;
+    overflow:hidden;cursor:pointer}
+  .rota-card.foco{box-shadow:0 0 0 2px var(--azul)}
+  .rota-head{display:flex;align-items:center;gap:8px;padding:9px 11px}
+  .rota-head .barra{width:5px;align-self:stretch;border-radius:3px;flex-shrink:0}
+  .rota-head .nome{font-weight:600;flex:1}
+  .rota-head .meta{font-size:11px;color:var(--muted);text-align:right;line-height:1.4}
+  .rota-paradas{border-top:1px solid var(--border);background:var(--surface2);
+    padding:6px 11px;font-size:12px;display:none}
+  .rota-card.aberta .rota-paradas{display:block}
+  .parada{display:flex;gap:7px;padding:2px 0;color:var(--muted)}
+  .parada .o{font-weight:700;color:var(--text);min-width:20px}
+  .badge-lala{background:#ede9fe;color:#6d28d9;font-size:10px;font-weight:700;
+    padding:1px 6px;border-radius:4px}
+  .vazio{color:var(--hint);text-align:center;padding:40px 16px;font-size:13px}
+  .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);
+    background:#1f2430;color:#fff;padding:9px 16px;border-radius:8px;font-size:13px;
+    z-index:9999;opacity:0;transition:opacity .2s;pointer-events:none}
+  .toast.show{opacity:1}
+  .marcador-num{background:#fff;border:2px solid #333;border-radius:50%;
+    width:22px;height:22px;display:flex;align-items:center;justify-content:center;
+    font-size:11px;font-weight:700;color:#333}
+  .marcador-cd,.marcador-casa{display:flex;align-items:center;justify-content:center;
+    font-size:18px;filter:drop-shadow(0 1px 2px rgba(0,0,0,.4))}
+  .leaflet-popup-content{font-size:13px;line-height:1.5}
+  hr{border:none;border-top:1px solid var(--border);margin:14px 0}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🚚 Roteirização de Entregas</h1>
+  <span class="sub">CVRP · OR-Tools + OSRM</span>
+  <div style="margin-left:auto;display:flex;gap:8px">
+    <button class="btn btn-sm" id="btn-exportar" onclick="exportarCsv()" disabled>⬇ Exportar CSV</button>
+  </div>
+</header>
+
+<div class="layout">
+  <aside class="sidebar">
+    <!-- ENTREGAS -->
+    <div class="secao">
+      <div class="secao-tit">1 · Entregas</div>
+      <div class="url-row">
+        <input type="text" id="sheet-url" placeholder="cole aqui a URL da planilha do Google Sheets"/>
+        <button class="btn btn-sm btn-azul" id="btn-sheet" onclick="carregarSheet()">📥 Carregar</button>
+      </div>
+      <div class="linha" style="margin-bottom:8px">
+        <input type="file" id="file-entregas" accept=".csv" style="display:none" onchange="onFileUpload(this)"/>
+        <button class="btn btn-sm" onclick="document.getElementById('file-entregas').click()">📄 Subir CSV</button>
+        <button class="btn btn-sm" onclick="carregarExemplo()">Usar exemplo</button>
+      </div>
+      <div class="info" id="info-entregas">Nenhuma entrega carregada. Cole a URL do Sheets (planilha Instabuy, compartilhada como "qualquer pessoa com o link") ou suba um CSV com <b>id, lat, lng</b>.</div>
+      <div id="falhas-geocode"></div>
+    </div>
+
+    <!-- CONFIG -->
+    <div class="secao">
+      <div class="secao-tit">2 · CD &amp; Entregadores</div>
+      <div class="info" id="info-cd" style="margin-bottom:8px">Carregando config…</div>
+      <div id="lista-entregadores"></div>
+    </div>
+
+    <!-- PARÂMETROS -->
+    <div class="secao">
+      <div class="secao-tit">3 · Parâmetros</div>
+      <div class="linha">
+        <div class="campo" style="flex:1"><label>Mín. paradas</label>
+          <input type="number" id="p-min" value="10" min="1"/></div>
+        <div class="campo" style="flex:1"><label>Máx. paradas</label>
+          <input type="number" id="p-max" value="18" min="1"/></div>
+        <div class="campo" style="flex:1"><label>Tempo (s)</label>
+          <input type="number" id="p-tempo" value="30" min="1"/></div>
+      </div>
+      <button class="btn btn-azul" style="width:100%;margin-top:4px" id="btn-rotear" onclick="roteirizar()">⚡ Roteirizar</button>
+    </div>
+
+    <hr/>
+
+    <!-- RESULTADO -->
+    <div class="secao" id="secao-resultado">
+      <div class="secao-tit">Rotas</div>
+      <div id="resultado"><div class="vazio">Carregue as entregas e clique em Roteirizar.</div></div>
+    </div>
+  </aside>
+
+  <div class="mapwrap">
+    <div id="map"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+// ── Estado ────────────────────────────────────────────────
+const CORES = ['#e6194B','#3cb44b','#4363d8','#f58231','#911eb4','#1abc9c',
+               '#f032e6','#bcbd22','#0891b2','#9A6324','#16a34a','#be123c',
+               '#000075','#7c3aed'];
+let S = {
+  config: null,         // {cd, entregadores}
+  entregasCsv: '',      // texto bruto do CSV
+  resultado: null,      // resposta de /api/rotear
+  rotaFoco: null,       // índice da rota em foco no mapa
+};
+let map, camadaEntrada, camadaRotas;
+
+// ── Init ──────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', init);
+
+async function init() {
+  map = L.map('map').setView([-19.92, -43.94], 12);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19, attribution: '© OpenStreetMap'
+  }).addTo(map);
+  camadaEntrada = L.layerGroup().addTo(map);
+  camadaRotas = L.layerGroup().addTo(map);
+  await carregarConfig();
+}
+
+async function carregarConfig() {
+  try {
+    const r = await fetch('/api/config');
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.erro || 'falha ao carregar config');
+    S.config = d;
+    renderConfig();
+    if (d.cd && d.cd.lat != null) {
+      map.setView([d.cd.lat, d.cd.lng], 12);
+      desenharEntrada();
+    }
+  } catch (e) {
+    document.getElementById('info-cd').innerHTML =
+      `<span style="color:var(--vermelho)">Erro: ${e.message}</span>`;
+  }
+}
+
+function renderConfig() {
+  const { cd, entregadores } = S.config;
+  document.getElementById('info-cd').innerHTML =
+    `<b>${cd.nome}</b> · ${Number(cd.lat).toFixed(4)}, ${Number(cd.lng).toFixed(4)}`;
+  const cont = document.getElementById('lista-entregadores');
+  cont.innerHTML = entregadores.map((e, i) => `
+    <label class="ent-item">
+      <input type="checkbox" class="chk-ent" data-id="${e.id}" ${e.disponivel ? 'checked' : ''}/>
+      <span class="dot" style="background:${CORES[i % CORES.length]}"></span>
+      <span class="nm">${e.nome}</span>
+      <span style="font-size:11px;color:var(--hint)">${e.id}</span>
+    </label>`).join('');
+}
+
+// ── Carregar entregas ─────────────────────────────────────
+function onFileUpload(input) {
+  const f = input.files[0];
+  if (!f) return;
+  const reader = new FileReader();
+  reader.onload = () => setEntregas(reader.result, f.name);
+  reader.readAsText(f, 'utf-8');
+}
+
+async function carregarExemplo() {
+  try {
+    const r = await fetch('/api/exemplo-entregas');
+    const txt = await r.text();
+    if (!r.ok) throw new Error('exemplo indisponível');
+    setEntregas(txt, 'exemplo (BH)');
+    document.getElementById('falhas-geocode').innerHTML = '';
+  } catch (e) { toast('Erro: ' + e.message); }
+}
+
+async function carregarSheet() {
+  const url = document.getElementById('sheet-url').value.trim();
+  if (!url) return toast('Cole a URL da planilha primeiro');
+  const btn = document.getElementById('btn-sheet');
+  const info = document.getElementById('info-entregas');
+  btn.disabled = true; btn.textContent = '⏳ Baixando…';
+  info.innerHTML = 'Baixando e geocodificando… <span style="color:var(--hint)">' +
+    '(primeira vez é mais lenta; depois o cache acelera muito)</span>';
+  document.getElementById('falhas-geocode').innerHTML = '';
+  try {
+    const r = await fetch('/api/sheets', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.erro || 'falha ao carregar a planilha');
+    setEntregas(d.entregas_csv, 'Google Sheets');
+    // Aviso de endereços não geocodificados, se houver — clientes precisam ser
+    // resolvidos manualmente (corrigir endereço na planilha ou colocar lat/lng à mão).
+    if (d.n_falhas > 0) {
+      const lis = d.falhas.map(f =>
+        `<div class="fl">· <b>${f.nome || f.id}</b> — ${f.endereco}</div>`).join('');
+      document.getElementById('falhas-geocode').innerHTML =
+        `<div class="falhas"><b>⚠ ${d.n_falhas} endereço(s) não geocodificado(s)</b>` +
+        `<span style="font-size:11px">essas entregas ficarão de fora — corrija o endereço na planilha e recarregue</span>` +
+        lis + `</div>`;
+    }
+  } catch (e) {
+    info.innerHTML = `<span style="color:var(--vermelho)">${e.message}</span>`;
+  } finally {
+    btn.disabled = false; btn.textContent = '📥 Carregar';
+  }
+}
+
+function setEntregas(texto, origem) {
+  S.entregasCsv = texto || '';
+  const pontos = parseCsv(S.entregasCsv);
+  document.getElementById('info-entregas').innerHTML =
+    `<b>${pontos.length}</b> entrega(s) carregada(s) <span style="color:var(--hint)">· ${origem}</span>`;
+  // Limpa resultado antigo — entradas mudaram
+  S.resultado = null;
+  document.getElementById('btn-exportar').disabled = true;
+  document.getElementById('resultado').innerHTML =
+    '<div class="vazio">Entregas prontas. Clique em Roteirizar.</div>';
+  desenharEntrada();
+}
+
+// Parser de CSV — trata aspas com vírgula dentro (o CSV vindo do /api/sheets
+// pode ter vírgulas em nome/obs do cliente).
+function parseCsvRow(s) {
+  const out = []; let buf = ''; let aspas = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (aspas) {
+      if (c === '"' && s[i + 1] === '"') { buf += '"'; i++; }
+      else if (c === '"') aspas = false;
+      else buf += c;
+    } else if (c === '"') aspas = true;
+    else if (c === ',') { out.push(buf); buf = ''; }
+    else buf += c;
+  }
+  out.push(buf);
+  return out;
+}
+
+function parseCsv(texto) {
+  const linhas = (texto || '').trim().split(/\r?\n/);
+  if (linhas.length < 2) return [];
+  const cab = parseCsvRow(linhas[0]).map(c => c.trim().toLowerCase());
+  const iId = cab.indexOf('id'), iNome = cab.indexOf('nome'),
+        iLat = cab.indexOf('lat'), iLng = cab.indexOf('lng');
+  if (iLat < 0 || iLng < 0) return [];
+  const pts = [];
+  for (let k = 1; k < linhas.length; k++) {
+    const c = parseCsvRow(linhas[k]);
+    const lat = parseFloat((c[iLat] || '').replace(',', '.'));
+    const lng = parseFloat((c[iLng] || '').replace(',', '.'));
+    if (isNaN(lat) || isNaN(lng)) continue;
+    pts.push({
+      id: (c[iId] || ('L' + k)).trim(),
+      nome: iNome >= 0 ? (c[iNome] || '').trim() : '',
+      lat, lng,
+    });
+  }
+  return pts;
+}
+
+// ── Mapa: entradas (antes de rotear) ──────────────────────
+function desenharEntrada() {
+  camadaEntrada.clearLayers();
+  if (S.resultado) return;  // se já tem resultado, o mapa mostra as rotas
+  if (S.config && S.config.cd && S.config.cd.lat != null) {
+    marcadorCD(S.config.cd).addTo(camadaEntrada);
+  }
+  const pts = parseCsv(S.entregasCsv);
+  const bounds = [];
+  pts.forEach(p => {
+    L.circleMarker([p.lat, p.lng], {
+      radius: 4, color: '#94a3b8', fillColor: '#cbd5e1', fillOpacity: .9, weight: 1
+    }).bindPopup(
+      `<b>${p.nome || p.id}</b>` +
+      (p.nome ? `<br><span style="color:#888">${p.id}</span>` : '') +
+      `<br>${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}`)
+      .addTo(camadaEntrada);
+    bounds.push([p.lat, p.lng]);
+  });
+  if (S.config && S.config.cd) bounds.push([S.config.cd.lat, S.config.cd.lng]);
+  if (bounds.length > 1) map.fitBounds(bounds, { padding: [40, 40] });
+}
+
+function marcadorCD(cd) {
+  return L.marker([cd.lat, cd.lng], {
+    icon: L.divIcon({ className: '', html: '<div class="marcador-cd">🏭</div>',
+      iconSize: [26, 26], iconAnchor: [13, 13] }), zIndexOffset: 1000
+  }).bindPopup(`<b>${cd.nome}</b><br>Centro de distribuição`);
+}
+
+// ── Roteirizar ────────────────────────────────────────────
+async function roteirizar() {
+  if (!S.entregasCsv.trim()) return toast('Carregue o CSV de entregas primeiro');
+  if (!S.config) return toast('Config ainda não carregou');
+  const disponiveis = [...document.querySelectorAll('.chk-ent:checked')]
+    .map(c => c.dataset.id);
+  const entregadores = S.config.entregadores.filter(e => disponiveis.includes(e.id));
+  if (!entregadores.length) return toast('Marque ao menos um entregador');
+
+  const body = {
+    entregas_csv: S.entregasCsv,
+    cd: S.config.cd,
+    entregadores,
+    min: parseInt(document.getElementById('p-min').value || '10'),
+    max: parseInt(document.getElementById('p-max').value || '18'),
+    tempo: parseInt(document.getElementById('p-tempo').value || '30'),
+  };
+
+  const btn = document.getElementById('btn-rotear');
+  btn.disabled = true; btn.textContent = '⏳ Roteirizando…';
+  document.getElementById('resultado').innerHTML =
+    '<div class="vazio">Calculando matriz e resolvendo o CVRP…</div>';
+  try {
+    const r = await fetch('/api/rotear', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.erro || 'falha na roteirização');
+    S.resultado = d;
+    S.rotaFoco = null;
+    renderResultado();
+    desenharRotas();
+    document.getElementById('btn-exportar').disabled = false;
+  } catch (e) {
+    document.getElementById('resultado').innerHTML =
+      `<div class="erro">${e.message}</div>`;
+  } finally {
+    btn.disabled = false; btn.textContent = '⚡ Roteirizar';
+  }
+}
+
+function hms(s) {
+  s = Math.round(s); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  return h ? `${h}h${String(m).padStart(2, '0')}` : `${m}min`;
+}
+
+// ── Render: lista de rotas ────────────────────────────────
+function renderResultado() {
+  const d = S.resultado;
+  const res = d.resumo;
+  let html = `<div class="resumo">
+    <div class="m"><b>${res.n_rotas}</b>rotas</div>
+    <div class="m"><b>${res.total_entregas}</b>entregas</div>
+    <div class="m"><b>${res.total_km}</b>km total</div>
+  </div>`;
+  if (res.total_entregas !== d.n_entregas_entrada) {
+    html += `<div class="aviso">⚠ ${d.n_entregas_entrada} entregas na entrada, ${res.total_entregas} roteadas.</div>`;
+  }
+  if (res.abaixo_min && res.abaixo_min.length) {
+    html += `<div class="aviso">⚠ ${res.abaixo_min.length} rota(s) abaixo de 10 paradas: ${res.abaixo_min.join(', ')}</div>`;
+  }
+  html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+    <span style="font-size:12px;color:var(--muted)">${d.rotas.length} rota(s)</span>
+    <button class="btn btn-sm" onclick="verTodas()">Ver todas no mapa</button>
+  </div>`;
+  html += d.rotas.map((r, i) => {
+    const cor = CORES[i % CORES.length];
+    const quem = r.entregador ? r.entregador.nome
+      : `<span class="badge-lala">LALAMOVE</span> rota candidata`;
+    const paradas = r.paradas.map(p => {
+      // Mostra nome quando vem (fluxo Sheets); senão cai no id (fluxo CSV "id,lat,lng")
+      const titulo = p.nome || p.id;
+      const sub = p.nome ? ` <span style="color:var(--hint)">· ${p.id}</span>` : '';
+      return `<div class="parada"><span class="o">${p.ordem}.</span>
+        <span style="flex:1">${titulo}${sub}${p.obs ? ` <span style="color:var(--hint)">· ${p.obs}</span>` : ''}</span>
+        <span>~${hms(p.chegada_estimada_s)}</span></div>`;
+    }).join('');
+    return `<div class="rota-card" id="rcard-${i}" onclick="toggleRota(${i})">
+      <div class="rota-head">
+        <div class="barra" style="background:${cor}"></div>
+        <div class="nome">${quem}</div>
+        <div class="meta">${r.n_paradas} entregas<br>${r.distancia_km} km · ${hms(r.duracao_s)}</div>
+      </div>
+      <div class="rota-paradas">${paradas || '<i>sem paradas</i>'}</div>
+    </div>`;
+  }).join('');
+  document.getElementById('resultado').innerHTML = html;
+}
+
+function toggleRota(i) {
+  const card = document.getElementById('rcard-' + i);
+  card.classList.toggle('aberta');
+  focarRota(i);
+}
+
+// ── Mapa: rotas ───────────────────────────────────────────
+function desenharRotas() {
+  camadaEntrada.clearLayers();
+  camadaRotas.clearLayers();
+  const d = S.resultado;
+  const todos = [];
+  marcadorCD(d.cd).addTo(camadaRotas);
+  todos.push([d.cd.lat, d.cd.lng]);
+
+  d.rotas.forEach((r, i) => {
+    const cor = CORES[i % CORES.length];
+    const pts = [[d.cd.lat, d.cd.lng]];
+    r.paradas.forEach(p => {
+      pts.push([p.lat, p.lng]);
+      todos.push([p.lat, p.lng]);
+      L.marker([p.lat, p.lng], {
+        icon: L.divIcon({ className: '',
+          html: `<div class="marcador-num" style="border-color:${cor};color:${cor}">${p.ordem}</div>`,
+          iconSize: [22, 22], iconAnchor: [11, 11] })
+      }).bindPopup(
+        `<b>${p.nome || p.id}</b> · parada ${p.ordem}` +
+        (p.nome ? `<br><span style="color:#888">${p.id}</span>` : '') +
+        `<br>${r.entregador ? r.entregador.nome : 'Lalamove'}` +
+        `<br>chega ~${hms(p.chegada_estimada_s)}${p.obs ? '<br><i>' + p.obs + '</i>' : ''}`)
+        .addTo(camadaRotas);
+    });
+    if (r.entregador) {
+      pts.push([r.entregador.lat, r.entregador.lng]);
+      todos.push([r.entregador.lat, r.entregador.lng]);
+      L.marker([r.entregador.lat, r.entregador.lng], {
+        icon: L.divIcon({ className: '',
+          html: `<div class="marcador-casa" style="color:${cor}">🏠</div>`,
+          iconSize: [24, 24], iconAnchor: [12, 12] })
+      }).bindPopup(`<b>🏠 ${r.entregador.nome}</b><br>fim da rota`).addTo(camadaRotas);
+    }
+    L.polyline(pts, { color: cor, weight: 3, opacity: .85 })
+      .addTo(camadaRotas);
+  });
+  if (todos.length > 1) map.fitBounds(todos, { padding: [40, 40] });
+}
+
+function focarRota(i) {
+  const d = S.resultado;
+  if (!d) return;
+  S.rotaFoco = i;
+  document.querySelectorAll('.rota-card').forEach((c, k) =>
+    c.classList.toggle('foco', k === i));
+  const r = d.rotas[i];
+  const pts = [[d.cd.lat, d.cd.lng], ...r.paradas.map(p => [p.lat, p.lng])];
+  if (r.entregador) pts.push([r.entregador.lat, r.entregador.lng]);
+  if (pts.length > 1) map.fitBounds(pts, { padding: [60, 60] });
+}
+
+function verTodas() {
+  S.rotaFoco = null;
+  document.querySelectorAll('.rota-card').forEach(c =>
+    c.classList.remove('foco'));
+  desenharRotas();
+}
+
+// ── Exportar CSV ──────────────────────────────────────────
+function exportarCsv() {
+  const d = S.resultado;
+  if (!d) return;
+  const linhas = [[
+    'entregador', 'ordem', 'entrega_id', 'cliente', 'lat', 'lng',
+    'chegada_estimada_s', 'obs', 'rota_km', 'rota_duracao_s', 'candidata_lalamove'
+  ]];
+  d.rotas.forEach(r => {
+    const quem = r.entregador ? r.entregador.nome : 'LALAMOVE';
+    r.paradas.forEach(p => {
+      linhas.push([
+        quem, p.ordem, p.id,
+        (p.nome || '').replace(/[\n,]/g, ' '),
+        p.lat, p.lng, p.chegada_estimada_s,
+        (p.obs || '').replace(/[\n,]/g, ' '), r.distancia_km, r.duracao_s,
+        r.candidata_lalamove ? 1 : 0
+      ]);
+    });
+  });
+  const csv = linhas.map(l => l.join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `rotas_${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast('✓ CSV exportado');
+}
+
+// ── Toast ─────────────────────────────────────────────────
+let _toastT;
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  clearTimeout(_toastT);
+  _toastT = setTimeout(() => t.classList.remove('show'), 2800);
+}
+</script>
+</body>
+</html>

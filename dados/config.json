@@ -1,18 +1,23 @@
 {
-  "_comentario": "CD + entregadores disponíveis. Coords de exemplo na região de BH. Ajuste pros endereços reais. 'disponivel: false' tira o entregador da roteirização do dia.",
+  "_comentario": "CD + entregadores. Coordenadas geocodificadas (Nominatim/OSM) a partir dos endereços reais. 'disponivel: false' tira o entregador da roteirização do dia. ATENÇÃO: 3 endereços não foram encontrados no número exato e ficaram no centro do bairro — confira/ajuste lat/lng de Tamara, Camila, Cristiano e Edilene.",
   "cd": {
-    "nome": "Centro de Distribuição",
-    "lat": -19.92000,
-    "lng": -43.94000
+    "nome": "CD - Ferreira Viana",
+    "lat": -19.9398004,
+    "lng": -43.9817874
   },
   "entregadores": [
-    { "id": "E1", "nome": "Carlos",   "lat": -19.86800, "lng": -43.96200, "disponivel": true },
-    { "id": "E2", "nome": "Daniel",   "lat": -19.88500, "lng": -43.90500, "disponivel": true },
-    { "id": "E3", "nome": "Eduardo",  "lat": -19.94800, "lng": -43.91800, "disponivel": true },
-    { "id": "E4", "nome": "Fernanda", "lat": -19.97200, "lng": -43.95500, "disponivel": true },
-    { "id": "E5", "nome": "Gabriel",  "lat": -19.95500, "lng": -44.00200, "disponivel": true },
-    { "id": "E6", "nome": "Helena",   "lat": -19.90200, "lng": -44.02500, "disponivel": true },
-    { "id": "E7", "nome": "Igor",     "lat": -19.91800, "lng": -43.88000, "disponivel": true },
-    { "id": "E8", "nome": "Juliana",  "lat": -19.99500, "lng": -43.92000, "disponivel": true }
+    { "id": "E1",  "nome": "Cristina",      "lat": -19.9441832, "lng": -43.9838821, "disponivel": true },
+    { "id": "E2",  "nome": "Tamara",        "lat": -20.0192692, "lng": -44.0335522, "disponivel": true },
+    { "id": "E3",  "nome": "João",          "lat": -19.9196157, "lng": -44.0046092, "disponivel": true },
+    { "id": "E4",  "nome": "José",          "lat": -19.9612787, "lng": -43.9959463, "disponivel": true },
+    { "id": "E5",  "nome": "Leia",          "lat": -19.9402087, "lng": -43.9777962, "disponivel": true },
+    { "id": "E6",  "nome": "Karina",        "lat": -19.8404821, "lng": -43.9172332, "disponivel": true },
+    { "id": "E7",  "nome": "Camila",        "lat": -20.0192692, "lng": -44.0335522, "disponivel": true },
+    { "id": "E8",  "nome": "Ana Carolina",  "lat": -19.9378709, "lng": -43.9595124, "disponivel": true },
+    { "id": "E9",  "nome": "Cristiano",     "lat": -19.9999760, "lng": -44.0144297, "disponivel": true },
+    { "id": "E10", "nome": "Edilene",       "lat": -19.8675063, "lng": -43.9513937, "disponivel": true },
+    { "id": "E11", "nome": "Emerson",       "lat": -19.9398004, "lng": -43.9817874, "disponivel": true },
+    { "id": "E12", "nome": "Alex",          "lat": -19.9398004, "lng": -43.9817874, "disponivel": true },
+    { "id": "E13", "nome": "Daniel",        "lat": -19.9398004, "lng": -43.9817874, "disponivel": true }
   ]
 }
