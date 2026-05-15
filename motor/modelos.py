@@ -6,9 +6,10 @@ from dataclasses import dataclass, field
 @dataclass
 class Entrega:
     """Uma parada de entrega."""
-    id: str
+    id: str                    # identificador estável (ex: CÓDIGO do pedido)
     lat: float
     lng: float
+    nome: str = ""             # nome do cliente (exibição) — pode repetir
     obs: str = ""              # observação livre (ex: "só após 14h")
     # Janela de horário opcional, em minutos desde o início da roteirização.
     # None = sem restrição (entrega pode ser feita a qualquer momento).

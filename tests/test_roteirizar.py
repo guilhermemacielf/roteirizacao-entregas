@@ -39,7 +39,8 @@ def test_capacidade_respeitada():
               + [(d.lat, d.lng) for d in entregadores])
     rotas = roteirizar(entregas, entregadores, cd,
                        min_paradas=5, max_paradas=10,
-                       matriz_pronta=_matriz_grade(coords), tempo_limite_s=5)
+                       matriz_pronta=_matriz_grade(coords), tempo_limite_s=5,
+                       limite_rota_min=None)  # matriz sintética não respeita tempo real
     assert rotas, "deveria gerar rotas"
     for r in rotas:
         assert r.n_paradas <= 10, f"rota com {r.n_paradas} paradas excede o máximo"
@@ -58,7 +59,8 @@ def test_todas_entregas_atendidas():
               + [(d.lat, d.lng) for d in entregadores])
     rotas = roteirizar(entregas, entregadores, cd,
                        min_paradas=6, max_paradas=10,
-                       matriz_pronta=_matriz_grade(coords), tempo_limite_s=5)
+                       matriz_pronta=_matriz_grade(coords), tempo_limite_s=5,
+                       limite_rota_min=None)
     total = sum(r.n_paradas for r in rotas)
     assert total == 24, f"esperava 24 entregas roteirizadas, veio {total}"
     ids = {p.entrega.id for r in rotas for p in r.paradas}
@@ -78,7 +80,8 @@ def test_janela_horario():
               + [(d.lat, d.lng) for d in entregadores])
     rotas = roteirizar(entregas, entregadores, cd,
                        min_paradas=10, max_paradas=12,
-                       matriz_pronta=_matriz_grade(coords), tempo_limite_s=5)
+                       matriz_pronta=_matriz_grade(coords), tempo_limite_s=5,
+                       limite_rota_min=None)
     for r in rotas:
         for p in r.paradas:
             if p.entrega.id == "E5":

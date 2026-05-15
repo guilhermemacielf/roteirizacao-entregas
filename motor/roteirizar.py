@@ -8,14 +8,16 @@ Resolve, de uma vez só:
 
 Restrições modeladas:
   - Cada rota sai do CD e TERMINA na casa do entregador (open VRP, end node
-    distinto por veículo). O solver minimiza o trajeto total INCLUINDO a
-    perna final até a casa — então as entregas naturalmente "fluem" na
-    direção da casa de cada entregador.
+    distinto por veículo). Como a perna final até a casa entra na conta,
+    as entregas naturalmente "fluem" na direção da casa de cada entregador.
   - Capacidade: cada rota usada tem entre `min_paradas` e `max_paradas`
     entregas (default 10-18). Veículo não usado tem 0 paradas.
-  - Janelas de horário opcionais por entrega.
+  - Tempo: todos saem do CD às 9h. Cada entrega gasta `servico_por_entrega_s`
+    (10 min) além do deslocamento. Toda entrega tem que estar concluída até
+    o `limite_rota_min` (default 240 min = 13h).
+  - Janelas de horário opcionais por entrega (início e/ou fim).
 
-Objetivo: minimizar o tempo total de deslocamento (segundos, via matriz OSRM).
+Objetivo: minimizar a QUILOMETRAGEM total (metros, via matriz OSRM).
 
 Entrada: lista de Entrega, lista de Entregador, CD.
 Saída:   lista de Rota (ordenadas, com distância/duração).
@@ -39,6 +41,8 @@ def roteirizar(
     max_paradas: int = 18,
     matriz_pronta: dict | None = None,
     tempo_limite_s: int = 30,
+    servico_por_entrega_s: int = 600,    # 10 min parado em cada entrega
+    limite_rota_min: int | None = 240,   # entregas concluídas até 13h (240min após 9h)
 ) -> list[Rota]:
     """
     Resolve a roteirização. Retorna uma lista de Rota (uma por entregador
@@ -47,6 +51,11 @@ def roteirizar(
     `matriz_pronta`: se fornecida, usa essa matriz em vez de chamar o OSRM
     (útil pra testes e pra desacoplar a fonte da matriz). Formato igual ao
     retorno de motor.matriz.matriz().
+
+    `servico_por_entrega_s`: tempo parado em cada entrega (entra na dimensão
+    de tempo, não na distância).
+    `limite_rota_min`: minutos desde a saída do CD em que toda entrega tem
+    que estar concluída (None = sem limite).
     """
     n = len(entregas)
     m = len(entregadores)
@@ -94,12 +103,24 @@ def roteirizar(
     manager = pywrapcp.RoutingIndexManager(n_nos, m, starts, ends)
     routing = pywrapcp.RoutingModel(manager)
 
-    # Custo do arco = duração (segundos) entre os nós
-    def cb_duracao(i, j):
-        return duracao[manager.IndexToNode(i)][manager.IndexToNode(j)]
+    # Custo do arco = DISTÂNCIA (metros). O objetivo é minimizar a
+    # quilometragem total — não o tempo.
+    def cb_distancia(i, j):
+        return distancia[manager.IndexToNode(i)][manager.IndexToNode(j)]
 
-    cb_idx = routing.RegisterTransitCallback(cb_duracao)
-    routing.SetArcCostEvaluatorOfAllVehicles(cb_idx)
+    cb_dist_idx = routing.RegisterTransitCallback(cb_distancia)
+    routing.SetArcCostEvaluatorOfAllVehicles(cb_dist_idx)
+
+    # Callback de TEMPO = deslocamento + serviço do nó de origem. Pôr o
+    # serviço no arco de SAÍDA faz o cumul de tempo numa entrega bater com
+    # a hora de CHEGADA nela (o serviço dela é "gasto" ao sair).
+    def cb_tempo(i, j):
+        no_i = manager.IndexToNode(i)
+        no_j = manager.IndexToNode(j)
+        serv = servico_por_entrega_s if no_i < n else 0   # CD/casa não têm serviço
+        return duracao[no_i][no_j] + serv
+
+    cb_tempo_idx = routing.RegisterTransitCallback(cb_tempo)
 
     # ── Dimensão de contagem (nº de paradas por rota) ────────
     def cb_uma_parada(i):
@@ -123,22 +144,35 @@ def roteirizar(
         cnt_fim = cnt_dim.CumulVar(routing.End(v))
         solver.Add(solver.Max(cnt_fim == 0, cnt_fim >= min_paradas) == 1)
 
-    # ── Dimensão de tempo (pra janelas de horário) ───────────
-    # Horizonte generoso: 24h em segundos.
+    # ── Dimensão de tempo (deslocamento + serviço) ───────────
+    # Horizonte generoso: 24h em segundos. Slack alto = pode esperar
+    # (necessário quando uma entrega tem janela de início).
     HORIZONTE = 24 * 3600
-    routing.AddDimension(cb_idx, HORIZONTE, HORIZONTE, True, "Tempo")
+    routing.AddDimension(cb_tempo_idx, HORIZONTE, HORIZONTE, True, "Tempo")
     tempo_dim = routing.GetDimensionOrDie("Tempo")
-    for i, e in enumerate(entregas):
-        if e.janela_inicio is not None and e.janela_fim is not None:
-            idx = manager.NodeToIndex(i)
-            tempo_dim.CumulVar(idx).SetRange(
-                e.janela_inicio * 60, e.janela_fim * 60
-            )
 
-    # Custo fixo por veículo usado: empurra o solver a encher rotas em vez
-    # de espalhar fino. Valor alto o suficiente pra dominar pequenas
-    # economias de trajeto, mas não infinito.
-    routing.SetFixedCostOfAllVehicles(3600)   # equivale a "1h de trajeto"
+    # Limite da rota: toda ENTREGA tem que estar concluída até `limite_rota_min`.
+    # cumul numa entrega = hora de chegada; concluída = chegada + serviço.
+    # Então chegada ≤ limite − serviço. A perna de volta pra casa do
+    # entregador (commute) fica de fora desse limite, de propósito.
+    cap_chegada = None
+    if limite_rota_min is not None:
+        cap_chegada = max(0, limite_rota_min * 60 - servico_por_entrega_s)
+
+    for i, e in enumerate(entregas):
+        cv = tempo_dim.CumulVar(manager.NodeToIndex(i))
+        if e.janela_inicio is not None:
+            cv.SetMin(e.janela_inicio * 60)
+        if e.janela_fim is not None:
+            cv.SetMax(e.janela_fim * 60)
+        if cap_chegada is not None:
+            cv.SetMax(cap_chegada)   # intersecta com a janela, se houver
+
+    # Custo fixo por veículo usado (em metros, mesma unidade do arco):
+    # empurra o solver a encher rotas em vez de espalhar fino. Como o
+    # mínimo de paradas já evita rotas minúsculas, isso é mais um
+    # desempate — vale ~3,6 km por veículo a mais.
+    routing.SetFixedCostOfAllVehicles(3600)
 
     # ── 4. Resolver ──────────────────────────────────────────
     params = pywrapcp.DefaultRoutingSearchParameters()
@@ -153,8 +187,10 @@ def roteirizar(
     sol = routing.SolveWithParameters(params)
     if sol is None:
         raise RuntimeError(
-            "OR-Tools não encontrou solução. Verifique se há entregadores "
-            "suficientes pro volume de entregas (min/max paradas)."
+            "OR-Tools não encontrou solução possível. Causas comuns: "
+            "entregadores de menos pro volume; min/max de paradas apertado "
+            "demais; ou o limite de horário (13h) + os 10 min por entrega "
+            "não cabem. Tente liberar mais entregadores ou afrouxar os limites."
         )
 
     # ── 5. Extrair rotas ─────────────────────────────────────
