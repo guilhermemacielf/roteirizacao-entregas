@@ -191,17 +191,35 @@ def escrever_rotas(url_planilha: str, rotas: list[dict]) -> dict:
     except ValueError as e:
         raise SheetsWriteError("não achei a coluna CÓDIGO no cabeçalho") from e
 
-    # Mapa CÓDIGO → (nome_entregador, ordem) a partir das rotas. Ordem 1-N
-    # POR ENTREGADOR (não global): o usuário ordena a planilha A-Z e a
-    # sequência de cada rota fica certa.
+    # Ordena rotas: entregadores reais em ordem alfabética por nome, depois
+    # Lalamoves (ordenados pelo número). Numeração da coluna B é GLOBAL
+    # contínua — Camila 1-15, Cristina 16-33, ..., Lalamove1 N+1-N+6, etc.
+    # Assim, ordenar a planilha por col B (Ordem) ascending já dá tudo na
+    # sequência certa: entregadores agrupados, dentro de cada um a rota
+    # certa, e Lalamoves no final.
+    def _chave_ordem(rota):
+        ent = rota.get("entregador") or {}
+        nome = ent.get("nome", "") or ""
+        if rota.get("candidata_lalamove"):
+            # Pega o nº do "Lalamove N" pra ordenar 1,2,...,10 (não 1,10,2)
+            m = re.search(r"(\d+)", nome)
+            return (1, int(m.group(1)) if m else 0, nome)
+        return (0, 0, nome.lower())
+
+    rotas_ord = sorted(rotas, key=_chave_ordem)
+
+    # Mapa CÓDIGO → (nome_entregador, ordem_global). Ordem incrementa
+    # CONTÍNUO entre entregadores.
     cod_para_rota: dict[str, tuple[str, int]] = {}
-    for rota in rotas:
+    ordem_global = 0
+    for rota in rotas_ord:
         ent = rota.get("entregador") or {}
         nome_ent = ent.get("nome") or "—"
         for parada in rota.get("paradas") or []:
             cod = str(parada.get("id") or "").strip()
             if cod:
-                cod_para_rota[cod] = (nome_ent, parada["ordem"])
+                ordem_global += 1
+                cod_para_rota[cod] = (nome_ent, ordem_global)
 
     # Monta updates em batch (mais rápido que update célula a célula). Inclui
     # cabeçalho "Entregador" / "Ordem" na linha do cab_idx.
@@ -234,6 +252,34 @@ def escrever_rotas(url_planilha: str, rotas: list[dict]) -> dict:
         ws.batch_update(updates, value_input_option="USER_ENTERED")
     except Exception as e:
         raise SheetsWriteError(f"falha escrevendo na planilha: {e}") from e
+
+    # Ordena a planilha por col B (Ordem) ascending DEPOIS de escrever.
+    # Como Ordem é contínua e segue ordem alfabética dos entregadores,
+    # ordenar só por B já agrupa entregadores + sequência correta dentro.
+    # Lalamoves vêm depois naturalmente (ordens mais altas).
+    if n_atualizadas > 0:
+        n_linhas = len(valores)
+        n_cols = max(len(l) for l in valores) if valores else 0
+        try:
+            planilha.batch_update({
+                "requests": [{
+                    "sortRange": {
+                        "range": {
+                            "sheetId": ws.id,
+                            "startRowIndex": cab_idx + 1,   # pula cabeçalho
+                            "endRowIndex": n_linhas,
+                            "startColumnIndex": 0,
+                            "endColumnIndex": n_cols,
+                        },
+                        "sortSpecs": [
+                            {"dimensionIndex": 1, "sortOrder": "ASCENDING"},  # col B = Ordem
+                        ],
+                    }
+                }]
+            })
+        except Exception as e:
+            # Não bloqueia — escrita já foi feita, só não conseguiu ordenar.
+            log.warning("escrita OK, mas sort A-Z falhou: %s", e)
 
     return {
         "linhas_atualizadas": n_atualizadas,
