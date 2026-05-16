@@ -455,30 +455,100 @@ function popupPonto(p, distKm, suspeito) {
        + `<br>${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}`
        + (distKm ? `<br><span style="color:#888">${distKm.toFixed(1)} km do CD</span>` : '')
        + aviso
-       + `<div style="margin-top:6px"><button class="btn btn-sm" style="color:#dc2626" onclick="removerPonto('${id}')">× Remover do mapa</button></div>`;
+       + `<div style="display:flex;gap:4px;margin-top:6px;flex-wrap:wrap">
+            <button class="btn btn-sm btn-azul" onclick="abrirEdicaoPonto('${id}')">✎ Editar coordenadas</button>
+            <button class="btn btn-sm" style="color:#dc2626" onclick="removerPonto('${id}')">× Remover</button>
+          </div>`;
 }
 
 function renderAvisoDistantes(distantes) {
   const cont = document.getElementById('aviso-distantes');
   if (!cont) return;
   if (!distantes.length) { cont.innerHTML = ''; return; }
-  const linhas = distantes.map(d =>
-    `<div style="display:flex;gap:6px;align-items:center;padding:3px 0;border-bottom:1px dashed rgba(154,28,28,.2)">
+  const linhas = distantes.map(d => {
+    const idEsc = String(d.id).replace(/'/g, "\\'");
+    return `<div style="display:flex;gap:6px;align-items:center;padding:4px 0;border-bottom:1px dashed rgba(154,28,28,.2)">
        <b style="flex:1;font-size:12px">${d.nome || d.id}</b>
        <span style="font-size:11px;font-family:var(--mono,monospace)">${d.distKm.toFixed(1)} km</span>
-       <button class="btn btn-sm" style="color:#dc2626;padding:2px 8px" onclick="removerPonto('${String(d.id).replace(/'/g, "\\'")}')">×</button>
-     </div>`).join('');
+       <button class="btn btn-sm btn-azul" style="padding:2px 8px" onclick="abrirEdicaoPonto('${idEsc}')">✎</button>
+       <button class="btn btn-sm" style="color:#dc2626;padding:2px 8px" onclick="removerPonto('${idEsc}')">×</button>
+     </div>`;
+  }).join('');
   cont.innerHTML =
     `<div class="erro" style="margin-top:8px">
        <b>⚠ ${distantes.length} ponto(s) a mais de ${DIST_SUSPEITA_KM} km do CD</b>
-       <div style="font-size:11px;margin-bottom:4px">provavelmente geocode errado (rua com mesmo nome em outra cidade). Confira ou remova:</div>
+       <div style="font-size:11px;margin-bottom:4px">provavelmente geocode errado (rua com mesmo nome em outra cidade). Edite (cole lat,lng do Google Maps) ou remova:</div>
        ${linhas}
      </div>`;
 }
 
+// Abre um popup de edição centrado na localização atual do ponto, com
+// input pra colar "lat, lng" do Google Maps (clica no ponto certo no
+// Maps, copia a coordenada que aparece, cola aqui).
+function abrirEdicaoPonto(id) {
+  const pts = parseCsv(S.entregasCsv);
+  const p = pts.find(x => String(x.id) === id);
+  if (!p) return toast(`Entrega ${id} não encontrada`);
+  map.closePopup();
+  const idEsc = String(id).replace(/'/g, "\\'");
+  const html =
+    `<b>Editar: ${p.nome || p.id}</b>
+     <div style="font-size:11px;color:#888;margin:4px 0">
+       atual: ${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}<br>
+       cole as coordenadas certas do Google Maps:
+     </div>
+     <input type="text" id="edit-coord-${idEsc}" class="fl-coord-input" style="width:100%"
+       placeholder="-19.939, -43.981" autofocus
+       onkeydown="if(event.key==='Enter')salvarEdicaoPonto('${idEsc}')"/>
+     <div style="display:flex;gap:4px;margin-top:6px">
+       <button class="btn btn-sm btn-azul" onclick="salvarEdicaoPonto('${idEsc}')">Salvar</button>
+       <button class="btn btn-sm" onclick="map.closePopup()">Cancelar</button>
+     </div>`;
+  L.popup({ closeOnClick: false, autoClose: false })
+    .setLatLng([p.lat, p.lng])
+    .setContent(html)
+    .openOn(map);
+  setTimeout(() => document.getElementById(`edit-coord-${idEsc}`)?.focus(), 50);
+}
+
+function salvarEdicaoPonto(id) {
+  const input = document.getElementById(`edit-coord-${id}`);
+  if (!input) return;
+  const v = input.value.trim().replace(/[()]/g, '');
+  const m = v.match(/(-?\d+(?:\.\d+)?)[,\s]+(-?\d+(?:\.\d+)?)/);
+  if (!m) {
+    input.style.borderColor = '#dc2626';
+    return toast('Formato: "lat, lng" (ex: -19.939, -43.981)');
+  }
+  const lat = parseFloat(m[1]), lng = parseFloat(m[2]);
+  if (!(-90 <= lat && lat <= 90 && -180 <= lng && lng <= 180)) {
+    return toast('Lat/lng fora dos limites válidos');
+  }
+  // Atualiza a linha do CSV com as novas coords. id case-sensitive.
+  const linhas = S.entregasCsv.split(/\r?\n/);
+  if (linhas.length < 2) return;
+  const cab = parseCsvRow(linhas[0]).map(c => c.trim().toLowerCase());
+  const iId = cab.indexOf('id'), iLat = cab.indexOf('lat'), iLng = cab.indexOf('lng');
+  if (iId < 0 || iLat < 0 || iLng < 0) return toast('CSV sem colunas id/lat/lng');
+  let editadas = 0;
+  for (let k = 1; k < linhas.length; k++) {
+    if (!linhas[k].trim()) continue;
+    const c = parseCsvRow(linhas[k]);
+    if ((c[iId] || '').trim() !== id) continue;
+    c[iLat] = String(lat);
+    c[iLng] = String(lng);
+    // Re-escapa campos com vírgulas/aspas pra preservar formato.
+    linhas[k] = c.map(v => /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v).join(',');
+    editadas++;
+  }
+  if (!editadas) return toast(`Entrega ${id} não encontrada no CSV`);
+  S.entregasCsv = linhas.join('\n');
+  setEntregas(S.entregasCsv, 'editado');
+  toast(`✓ ${id} editada → ${lat.toFixed(5)}, ${lng.toFixed(5)}`);
+  map.closePopup();
+}
+
 function removerPonto(id) {
-  // Remove a linha do CSV pelo campo id (case-sensitive). Se a entrega
-  // veio do fluxo Sheets, o id é o CÓDIGO do pedido.
   const linhas = S.entregasCsv.split(/\r?\n/);
   if (linhas.length < 2) return;
   const cab = parseCsvRow(linhas[0]).map(c => c.trim().toLowerCase());
