@@ -24,12 +24,74 @@ Saída:   lista de Rota (ordenadas, com distância/duração).
 """
 
 import logging
+import math
 from ortools.constraint_solver import routing_enums_pb2, pywrapcp
 
 from motor.modelos import Entrega, Entregador, CD, Parada, Rota
 from motor.matriz import matriz as osrm_matriz
 
 log = logging.getLogger(__name__)
+
+# Velocidade média estimada em meio urbano de BH — usada só pra estimar
+# duração de rotas Lalamove (que NÃO passam pela matriz OSRM).
+KMH_URBANO = 30.0
+
+
+def _haversine_km(a_lat: float, a_lng: float, b_lat: float, b_lng: float) -> float:
+    """Distância em km entre 2 coordenadas (fórmula da esfera). Aproximação
+    boa o suficiente pra ordenar 'mais próximo do CD' na separação Lalamove
+    — erro de ~10-15% vs. trajeto real, irrelevante pra ranking."""
+    R = 6371.0
+    dlat = math.radians(b_lat - a_lat)
+    dlng = math.radians(b_lng - a_lng)
+    a = (math.sin(dlat / 2) ** 2
+         + math.cos(math.radians(a_lat)) * math.cos(math.radians(b_lat))
+         * math.sin(dlng / 2) ** 2)
+    return 2 * R * math.asin(math.sqrt(a))
+
+
+def _separar_lalamove(
+    entregas: list[Entrega], cd: CD, capacidade: int
+) -> tuple[list[Entrega], list[Entrega]]:
+    """Quando há MAIS entregas do que os entregadores conseguem cobrir
+    (n > capacidade = n_entregadores × max_paradas), separa as N mais
+    próximas do CD pra serem rotas Lalamove. Lalamove cobra por distância
+    da ida — quanto mais perto, mais barato — então faz sentido que as
+    próximas saiam por app e as longas fiquem com os entregadores que
+    voltam pra casa no fim. Retorna (entregas_motor, entregas_lalamove)."""
+    n_sobras = max(0, len(entregas) - capacidade)
+    if n_sobras == 0 or capacidade <= 0:
+        return entregas, []
+    # Ordena por distância ao CD; pega as N mais próximas pro Lalamove.
+    indices_ord = sorted(
+        range(len(entregas)),
+        key=lambda i: _haversine_km(cd.lat, cd.lng,
+                                    entregas[i].lat, entregas[i].lng)
+    )
+    lalamove_idx = set(indices_ord[:n_sobras])
+    para_motor = [e for i, e in enumerate(entregas) if i not in lalamove_idx]
+    lalamove   = [e for i, e in enumerate(entregas) if i in lalamove_idx]
+    return para_motor, lalamove
+
+
+def _rotas_lalamove(entregas: list[Entrega], cd: CD) -> list[Rota]:
+    """Gera 1 Rota candidata Lalamove por entrega — cada uma com 1 parada
+    (CD → entrega). Distância via haversine (Lalamove cobra por trajeto
+    da ida, então estimativa por linha reta é OK pra orçamento); duração
+    estimada via velocidade média urbana de BH (30 km/h)."""
+    rotas: list[Rota] = []
+    for e in entregas:
+        dist_km = _haversine_km(cd.lat, cd.lng, e.lat, e.lng)
+        dist_m  = int(dist_km * 1000)
+        dur_s   = int(dist_km / KMH_URBANO * 3600)
+        rotas.append(Rota(
+            entregador=None,
+            paradas=[Parada(entrega=e, ordem=1, chegada_estimada_s=dur_s)],
+            distancia_m=dist_m,
+            duracao_s=dur_s,
+            candidata_lalamove=True,
+        ))
+    return rotas
 
 
 def roteirizar(
@@ -43,10 +105,12 @@ def roteirizar(
     tempo_limite_s: int = 30,
     servico_por_entrega_s: int = 600,    # 10 min parado em cada entrega
     limite_rota_min: int | None = 240,   # entregas concluídas até 13h (240min após 9h)
+    gerar_lalamove: bool = True,
 ) -> list[Rota]:
     """
     Resolve a roteirização. Retorna uma lista de Rota (uma por entregador
-    que saiu; entregadores sem entregas ficam de fora do resultado).
+    que saiu + uma por entrega que sobrou pra Lalamove). Entregadores sem
+    entregas ficam de fora do resultado.
 
     `matriz_pronta`: se fornecida, usa essa matriz em vez de chamar o OSRM
     (útil pra testes e pra desacoplar a fonte da matriz). Formato igual ao
@@ -56,13 +120,36 @@ def roteirizar(
     de tempo, não na distância).
     `limite_rota_min`: minutos desde a saída do CD em que toda entrega tem
     que estar concluída (None = sem limite).
+    `gerar_lalamove`: se True (default), entregas que excedem a capacidade
+    total dos entregadores (n_entregadores × max_paradas) viram rotas
+    candidatas a Lalamove — as mais próximas do CD, pra minimizar custo.
     """
-    n = len(entregas)
+    n_total = len(entregas)
     m = len(entregadores)
-    if n == 0:
+    if n_total == 0:
         return []
     if m == 0:
         raise ValueError("nenhum entregador disponível")
+
+    # ── 0. Separação Lalamove ────────────────────────────────
+    # Se há mais entregas do que cabe nos entregadores, as N mais próximas
+    # do CD viram rotas Lalamove (rota única por entrega, sem entregador
+    # final). O resto vai pro CVRP normal.
+    capacidade = m * max_paradas
+    if gerar_lalamove:
+        entregas, entregas_lalamove = _separar_lalamove(entregas, cd, capacidade)
+        if entregas_lalamove:
+            log.info(
+                "Lalamove: %d/%d entregas (mais próximas do CD) — capacidade dos entregadores: %d",
+                len(entregas_lalamove), n_total, capacidade,
+            )
+    else:
+        entregas_lalamove = []
+
+    n = len(entregas)
+    if n == 0:
+        # Tudo virou Lalamove (raro, mas possível com 0 capacidade dos entregadores).
+        return _rotas_lalamove(entregas_lalamove, cd)
 
     # ── 1. Layout dos nós ────────────────────────────────────
     # [0 .. n-1]      = entregas
@@ -226,5 +313,9 @@ def roteirizar(
             distancia_m=dist_total,
             duracao_s=dur_total,
         ))
+
+    # Anexa as rotas Lalamove (1 entrega cada, candidata_lalamove=True).
+    # Aparecem como cards separados no front com badge "LALAMOVE".
+    rotas.extend(_rotas_lalamove(entregas_lalamove, cd))
 
     return rotas

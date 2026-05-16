@@ -487,11 +487,23 @@ function hms(s) {
 function renderResultado() {
   const d = S.resultado;
   const res = d.resumo;
+  // Resumo principal: separa entregadores de Lalamove pra ficar claro
+  // o que vai por cada canal e quanto km gera de cada.
+  const nE   = res.n_rotas_entregadores ?? res.n_rotas;
+  const nL   = res.n_rotas_lalamove ?? 0;
+  const entL = res.entregas_lalamove ?? 0;
   let html = `<div class="resumo">
-    <div class="m"><b>${res.n_rotas}</b>rotas</div>
-    <div class="m"><b>${res.total_entregas}</b>entregas</div>
+    <div class="m"><b>${nE}</b>rotas entregador</div>
+    <div class="m"><b>${res.total_entregas - entL}</b>entregas</div>
     <div class="m"><b>${res.total_km}</b>km total</div>
   </div>`;
+  if (nL > 0) {
+    html += `<div class="resumo" style="background:#ede9fe;border-color:#c4b5fd">
+      <div class="m"><b>${nL}</b>rotas Lalamove</div>
+      <div class="m"><b>${entL}</b>entregas</div>
+      <div class="m"><b>${res.km_lalamove ?? 0}</b>km (ida)</div>
+    </div>`;
+  }
   if (res.total_entregas !== d.n_entregas_entrada) {
     html += `<div class="aviso">⚠ ${d.n_entregas_entrada} entregas na entrada, ${res.total_entregas} roteadas.</div>`;
   }

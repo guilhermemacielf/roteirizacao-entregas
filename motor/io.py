@@ -320,18 +320,27 @@ def rotas_para_dict(rotas: list[Rota], cd: CD) -> dict:
                 for p in r.paradas
             ],
         })
+    # "Abaixo do mínimo" só faz sentido pra rotas de entregador — Lalamove
+    # é sempre 1 parada por design e não deve disparar esse aviso.
     abaixo_min = [
-        (r.entregador.nome if r.entregador else "?")
-        for r in rotas if 0 < r.n_paradas < 10
+        r.entregador.nome
+        for r in rotas
+        if r.entregador and 0 < r.n_paradas < 10
     ]
+    rotas_normais  = [r for r in rotas if not r.candidata_lalamove]
+    rotas_lalamove = [r for r in rotas if r.candidata_lalamove]
     return {
         "cd": {"lat": cd.lat, "lng": cd.lng, "nome": cd.nome},
         "rotas": rotas_json,
         "resumo": {
-            "n_rotas":        len(rotas),
-            "total_entregas": sum(r.n_paradas for r in rotas),
-            "total_km":       round(sum(r.distancia_m for r in rotas) / 1000, 1),
-            "abaixo_min":     abaixo_min,
+            "n_rotas":              len(rotas),
+            "n_rotas_entregadores": len(rotas_normais),
+            "n_rotas_lalamove":     len(rotas_lalamove),
+            "total_entregas":       sum(r.n_paradas for r in rotas),
+            "entregas_lalamove":    sum(r.n_paradas for r in rotas_lalamove),
+            "total_km":             round(sum(r.distancia_m for r in rotas) / 1000, 1),
+            "km_lalamove":          round(sum(r.distancia_m for r in rotas_lalamove) / 1000, 1),
+            "abaixo_min":           abaixo_min,
         },
     }
 
