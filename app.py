@@ -23,8 +23,10 @@ from motor.modelos import CD, Entregador
 from motor.io import carregar_entregas_texto, rotas_para_dict, sheets_para_csv_motor
 from motor.roteirizar import roteirizar
 from motor.matriz import MatrizError
-from motor.geocode import GeocodeError, carregar_cache, salvar_cache, _normalizar
+from motor.geocode import (GeocodeError, carregar_cache, salvar_cache,
+                            _normalizar, geocodificar)
 from motor.obs import extrair_janela
+from motor.sheets_write import escrever_rotas, SheetsWriteError
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -182,6 +184,25 @@ def api_geocode_manual():
     })
 
 
+@app.route("/api/geocode/buscar", methods=["POST"])
+def api_geocode_buscar():
+    """Busca lat/lng de um endereço (pipeline completo: Nominatim → Photon →
+    BrasilAPI CEP → centroide do bairro/cidade). Usado pelo editor de ponto
+    no mapa quando o usuário quer consertar uma entrega geocodificada errada
+    sem precisar abrir o Google Maps. Resposta: {lat, lng}."""
+    d = request.json or {}
+    endereco = (d.get("endereco") or "").strip()
+    if not endereco:
+        return jsonify({"erro": "endereço obrigatório"}), 400
+    try:
+        coord = geocodificar(endereco)
+    except GeocodeError as e:
+        return jsonify({"erro": f"falha no geocoder: {e}"}), 502
+    if not coord:
+        return jsonify({"erro": "endereço não encontrado — tente algo mais específico ou colar coords"}), 404
+    return jsonify({"lat": coord[0], "lng": coord[1]})
+
+
 @app.route("/api/rotear", methods=["POST"])
 def api_rotear():
     """Roda o motor. Body JSON:
@@ -250,6 +271,31 @@ def api_rotear():
     resultado = rotas_para_dict(rotas, cd)
     resultado["n_entregas_entrada"] = len(entregas)
     return jsonify(resultado)
+
+
+@app.route("/api/sheets/escrever", methods=["POST"])
+def api_sheets_escrever():
+    """Escreve as rotas de volta na planilha Google Sheets: coluna A com o
+    nome do entregador, coluna B com a ordem da rota. Casamento pela coluna
+    CÓDIGO. Exige Service Account configurada (ver motor/sheets_write.py).
+
+    Body: {"url": "<sheets-url>", "rotas": [...]}  (rotas vem direto da resposta de /api/rotear)
+    """
+    d = request.get_json(silent=True) or {}
+    url = (d.get("url") or "").strip()
+    rotas = d.get("rotas") or []
+    if not url:
+        return jsonify({"erro": "informe a URL da planilha"}), 400
+    if not rotas:
+        return jsonify({"erro": "nenhuma rota pra escrever — rode /api/rotear antes"}), 400
+    try:
+        r = escrever_rotas(url, rotas)
+    except SheetsWriteError as e:
+        return jsonify({"erro": str(e)}), 503
+    except Exception as e:
+        log.exception("erro inesperado no /api/sheets/escrever")
+        return jsonify({"erro": f"erro inesperado: {e}"}), 500
+    return jsonify(r)
 
 
 if __name__ == "__main__":

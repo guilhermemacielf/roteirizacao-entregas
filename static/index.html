@@ -103,6 +103,7 @@
   <span class="sub">CVRP · OR-Tools + OSRM</span>
   <div style="margin-left:auto;display:flex;gap:8px">
     <button class="btn btn-sm" id="btn-exportar" onclick="exportarCsv()" disabled>⬇ Exportar CSV</button>
+    <button class="btn btn-sm btn-azul" id="btn-sheet-escrever" onclick="enviarParaSheet()" disabled>📤 Enviar pra planilha</button>
   </div>
 </header>
 
@@ -174,6 +175,7 @@ let S = {
   falhas: [],           // endereços não geocodificados (pra edição manual)
   resultado: null,      // resposta de /api/rotear
   rotaFoco: null,       // índice da rota em foco no mapa
+  sheetUrl: '',         // URL da planilha (preserva pra "Enviar pra planilha")
 };
 let map, camadaEntrada, camadaRotas;
 
@@ -258,6 +260,7 @@ async function carregarSheet() {
     const d = await r.json();
     if (!r.ok) throw new Error(d.erro || 'falha ao carregar a planilha');
     setEntregas(d.entregas_csv, 'Google Sheets');
+    S.sheetUrl = url;  // guarda pra "Enviar pra planilha" depois
     S.falhas = d.falhas || [];
     renderFalhas();
   } catch (e) {
@@ -482,9 +485,9 @@ function renderAvisoDistantes(distantes) {
      </div>`;
 }
 
-// Abre um popup de edição centrado na localização atual do ponto, com
-// input pra colar "lat, lng" do Google Maps (clica no ponto certo no
-// Maps, copia a coordenada que aparece, cola aqui).
+// Abre popup de edição com 2 modos: buscar endereço (default) ou colar
+// coordenadas do Google Maps. Buscar endereço chama /api/geocode/buscar
+// (Nominatim + Photon + BrasilAPI), bem mais conveniente que abrir o Maps.
 function abrirEdicaoPonto(id) {
   const pts = parseCsv(S.entregasCsv);
   const p = pts.find(x => String(x.id) === id);
@@ -494,21 +497,68 @@ function abrirEdicaoPonto(id) {
   const html =
     `<b>Editar: ${p.nome || p.id}</b>
      <div style="font-size:11px;color:#888;margin:4px 0">
-       atual: ${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}<br>
-       cole as coordenadas certas do Google Maps:
+       atual: ${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}
      </div>
-     <input type="text" id="edit-coord-${idEsc}" class="fl-coord-input" style="width:100%"
-       placeholder="-19.939, -43.981" autofocus
-       onkeydown="if(event.key==='Enter')salvarEdicaoPonto('${idEsc}')"/>
-     <div style="display:flex;gap:4px;margin-top:6px">
-       <button class="btn btn-sm btn-azul" onclick="salvarEdicaoPonto('${idEsc}')">Salvar</button>
-       <button class="btn btn-sm" onclick="map.closePopup()">Cancelar</button>
+     <div style="display:flex;gap:2px;margin-bottom:6px">
+       <button class="btn btn-sm btn-azul" id="tab-end-${idEsc}" onclick="trocarModoEdit('${idEsc}','end')">🔍 Endereço</button>
+       <button class="btn btn-sm" id="tab-coord-${idEsc}" onclick="trocarModoEdit('${idEsc}','coord')">📍 Coordenadas</button>
+     </div>
+     <div id="painel-end-${idEsc}">
+       <input type="text" id="edit-end-${idEsc}" class="fl-coord-input" style="width:100%"
+         placeholder="Rua Exemplo, 123, Belo Horizonte"
+         onkeydown="if(event.key==='Enter')buscarEnderecoPonto('${idEsc}')"/>
+       <div style="display:flex;gap:4px;margin-top:6px">
+         <button class="btn btn-sm btn-azul" onclick="buscarEnderecoPonto('${idEsc}')">Buscar e salvar</button>
+         <button class="btn btn-sm" onclick="map.closePopup()">Cancelar</button>
+       </div>
+     </div>
+     <div id="painel-coord-${idEsc}" style="display:none">
+       <input type="text" id="edit-coord-${idEsc}" class="fl-coord-input" style="width:100%"
+         placeholder="-19.939, -43.981"
+         onkeydown="if(event.key==='Enter')salvarEdicaoPonto('${idEsc}')"/>
+       <div style="font-size:11px;color:#888;margin-top:3px">cole "lat, lng" do Google Maps</div>
+       <div style="display:flex;gap:4px;margin-top:6px">
+         <button class="btn btn-sm btn-azul" onclick="salvarEdicaoPonto('${idEsc}')">Salvar</button>
+         <button class="btn btn-sm" onclick="map.closePopup()">Cancelar</button>
+       </div>
      </div>`;
-  L.popup({ closeOnClick: false, autoClose: false })
+  L.popup({ closeOnClick: false, autoClose: false, maxWidth: 320 })
     .setLatLng([p.lat, p.lng])
     .setContent(html)
     .openOn(map);
-  setTimeout(() => document.getElementById(`edit-coord-${idEsc}`)?.focus(), 50);
+  setTimeout(() => document.getElementById(`edit-end-${idEsc}`)?.focus(), 50);
+}
+
+function trocarModoEdit(id, modo) {
+  document.getElementById(`painel-end-${id}`).style.display   = modo === 'end' ? '' : 'none';
+  document.getElementById(`painel-coord-${id}`).style.display = modo === 'coord' ? '' : 'none';
+  document.getElementById(`tab-end-${id}`).className   = 'btn btn-sm' + (modo === 'end' ? ' btn-azul' : '');
+  document.getElementById(`tab-coord-${id}`).className = 'btn btn-sm' + (modo === 'coord' ? ' btn-azul' : '');
+  setTimeout(() => document.getElementById(`edit-${modo === 'end' ? 'end' : 'coord'}-${id}`)?.focus(), 30);
+}
+
+async function buscarEnderecoPonto(id) {
+  const input = document.getElementById(`edit-end-${id}`);
+  if (!input) return;
+  const endereco = (input.value || '').trim();
+  if (!endereco) return toast('Digite um endereço');
+  input.disabled = true;
+  toast('Buscando...');
+  try {
+    const r = await fetch('/api/geocode/buscar', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endereco }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.erro || 'falha na busca');
+    aplicarEdicaoNoCsv(id, d.lat, d.lng);
+    toast(`✓ encontrado em ${d.lat.toFixed(5)}, ${d.lng.toFixed(5)}`);
+    map.closePopup();
+  } catch (e) {
+    toast(`Erro: ${e.message}`);
+    input.disabled = false;
+    input.style.borderColor = '#dc2626';
+  }
 }
 
 function salvarEdicaoPonto(id) {
@@ -524,7 +574,13 @@ function salvarEdicaoPonto(id) {
   if (!(-90 <= lat && lat <= 90 && -180 <= lng && lng <= 180)) {
     return toast('Lat/lng fora dos limites válidos');
   }
-  // Atualiza a linha do CSV com as novas coords. id case-sensitive.
+  aplicarEdicaoNoCsv(id, lat, lng);
+  toast(`✓ ${id} editada → ${lat.toFixed(5)}, ${lng.toFixed(5)}`);
+  map.closePopup();
+}
+
+function aplicarEdicaoNoCsv(id, lat, lng) {
+  // Substitui lat/lng da linha do CSV pelo id (case-sensitive).
   const linhas = S.entregasCsv.split(/\r?\n/);
   if (linhas.length < 2) return;
   const cab = parseCsvRow(linhas[0]).map(c => c.trim().toLowerCase());
@@ -537,15 +593,12 @@ function salvarEdicaoPonto(id) {
     if ((c[iId] || '').trim() !== id) continue;
     c[iLat] = String(lat);
     c[iLng] = String(lng);
-    // Re-escapa campos com vírgulas/aspas pra preservar formato.
     linhas[k] = c.map(v => /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v).join(',');
     editadas++;
   }
   if (!editadas) return toast(`Entrega ${id} não encontrada no CSV`);
   S.entregasCsv = linhas.join('\n');
   setEntregas(S.entregasCsv, 'editado');
-  toast(`✓ ${id} editada → ${lat.toFixed(5)}, ${lng.toFixed(5)}`);
-  map.closePopup();
 }
 
 function removerPonto(id) {
@@ -610,6 +663,7 @@ async function roteirizar() {
     renderResultado();
     desenharRotas();
     document.getElementById('btn-exportar').disabled = false;
+    document.getElementById('btn-sheet-escrever').disabled = !S.sheetUrl;
   } catch (e) {
     document.getElementById('resultado').innerHTML =
       `<div class="erro">${e.message}</div>`;
@@ -743,6 +797,42 @@ function verTodas() {
   document.querySelectorAll('.rota-card').forEach(c =>
     c.classList.remove('foco'));
   desenharRotas();
+}
+
+// ── Enviar pra planilha (col A=entregador, col B=ordem) ──
+async function enviarParaSheet() {
+  if (!S.resultado) return toast('Roteirize primeiro');
+  if (!S.sheetUrl) return toast('Sem URL de planilha — carregue via "Carregar"');
+  const btn = document.getElementById('btn-sheet-escrever');
+  btn.disabled = true; btn.textContent = '⏳ Enviando...';
+  try {
+    const r = await fetch('/api/sheets/escrever', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: S.sheetUrl, rotas: S.resultado.rotas }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.erro || 'falha ao escrever na planilha');
+    let msg = `✓ ${d.linhas_atualizadas} linhas atualizadas`;
+    if (d.nao_encontradas && d.nao_encontradas.length) {
+      msg += ` (${d.nao_encontradas.length} códigos sem rota — coluna A/B limpa)`;
+    }
+    toast(msg);
+  } catch (e) {
+    // Setup da Service Account é o erro mais comum — popup com instrução.
+    if (/Service Account/i.test(e.message)) {
+      alert('Configurar Service Account (uma vez, ~10min):\n\n' +
+            '1. console.cloud.google.com → cria projeto + habilita "Google Sheets API"\n' +
+            '2. Cria Service Account → Keys → Add Key → JSON → baixa\n' +
+            '3. Compartilha a planilha com o client_email do JSON (permissão Editor)\n' +
+            '4. No PowerShell: $env:GOOGLE_SHEETS_SA_FILE = "C:\\caminho\\sa.json"\n' +
+            '5. Reinicia o app.py\n\n' +
+            'Detalhe do erro: ' + e.message);
+    } else {
+      toast('Erro: ' + e.message);
+    }
+  } finally {
+    btn.disabled = false; btn.textContent = '📤 Enviar pra planilha';
+  }
 }
 
 // ── Exportar CSV ──────────────────────────────────────────

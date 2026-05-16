@@ -301,16 +301,16 @@ def rotas_para_dict(rotas: list[Rota], cd: CD) -> dict:
     for r in rotas:
         ent = r.entregador
 
-        # Geometria da polyline: pra entregador real, pega do OSRM a rota
-        # CD → paradas → casa do entregador. Pra Lalamove, usa só os pontos
-        # (linha reta entre eles, já que distância Lalamove é haversine).
+        # Geometria da polyline via OSRM (ruas reais). Pra Lalamove, a
+        # sequência é CD → paradas (sem casa final — Lalamove não tem casa,
+        # o app cobra pela ida apenas). Pra entregador real, CD → paradas → casa.
         if r.candidata_lalamove or ent is None:
-            geom = [(cd.lat, cd.lng)] + [(p.entrega.lat, p.entrega.lng) for p in r.paradas]
+            seq = [(cd.lat, cd.lng)] + [(p.entrega.lat, p.entrega.lng) for p in r.paradas]
         else:
             seq = ([(cd.lat, cd.lng)]
                    + [(p.entrega.lat, p.entrega.lng) for p in r.paradas]
                    + [(ent.lat, ent.lng)])
-            geom = rota_geometria(seq)
+        geom = rota_geometria(seq)
 
         rotas_json.append({
             "entregador": None if ent is None else {
