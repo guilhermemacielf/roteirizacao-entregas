@@ -49,9 +49,9 @@ KMH_URBANO = 30.0
 MAX_PARADAS_LALAMOVE = 6
 
 # Bônus (em metros) descontado do custo do arco quando a entrega cai num
-# bairro de preferência do entregador. 5000m = "vale a pena fazer um detour
-# de até 5km pra dar essa entrega ao entregador que prefere o bairro".
-BONUS_PREFERENCIA_M = 5000
+# bairro de preferência do entregador. 1500m = preferência é SECUNDÁRIA,
+# vale a pena um detour pequeno mas não compromete balanço ou km total.
+BONUS_PREFERENCIA_M = 1500
 
 
 def _normalizar_bairro(s: str) -> str:
@@ -201,21 +201,20 @@ def _construir_e_resolver(
         cnt_idx, 0, [max_paradas] * m, True, "Contagem",
     )
     cnt_dim = routing.GetDimensionOrDie("Contagem")
-    # GlobalSpanCost na contagem como hint (mais barato que hard constraint
-    # de span e ainda preserva diversidade de busca).
-    cnt_dim.SetGlobalSpanCostCoefficient(500_000)
+    # PRIORIDADE 1: balanceamento de paradas é DOMINANTE. 10M por unidade
+    # de span (max - min de paradas entre veículos) faz o solver sempre
+    # preferir 13/13/13 a 17/9/13. Caso reportado: 8 entregadores com
+    # 5/17/etc → resultado ruim. Agora vira o problema mais caro.
+    cnt_dim.SetGlobalSpanCostCoefficient(10_000_000)
 
     if forcar_todos_saem:
-        # Restrição dura de balanceamento. Cada veículo fica entre
-        # [média-2, média_alta+3] paradas — span máximo de 5, suficiente
-        # pra absorver entregas mais "caras" (rota longa) sem deixar
-        # entregador com 1 parada enquanto outro tem 18.
-        # Exemplo: n=80, m=8 → média=10 → cada entre 8 e 13 paradas.
-        # Exemplo: n=36, m=13 → média 2-3 → cada entre 1 e 6.
-        # Se infactível (cenário extremo), o fallback remove a restrição.
+        # Tolerância LARGA (média±3) pra restrição quase sempre ser
+        # satisfeita SEM cair no fallback (onde balanço desaparece).
+        # n=106, m=8: média 13-14 → cada entre 10 e 17 paradas (span 7).
+        # O SpanCost dominante acima empurra pra valores próximos da média.
         media_baixa = n // m
         media_alta = -(-n // m)
-        lo = max(1, media_baixa - 2)
+        lo = max(1, media_baixa - 3)
         hi = min(max_paradas, media_alta + 3)
         solver = routing.solver()
         for v in range(m):
@@ -228,6 +227,20 @@ def _construir_e_resolver(
     HORIZONTE = 24 * 3600
     routing.AddDimension(cb_tempo_idx, HORIZONTE, HORIZONTE, True, "Tempo")
     tempo_dim = routing.GetDimensionOrDie("Tempo")
+
+    # PRIORIDADE 2: coerência geográfica. Rota "extremo-a-extremo" tem
+    # km muito maior que rota concentrada. Dimensão Distância acumula
+    # metros por veículo; SpanCost penaliza desequilíbrio de km (rotas com
+    # km muito diferentes). Indiretamente força entregas próximas em mesma
+    # rota — solver prefere agrupar geograficamente.
+    def cb_distancia_pura(i, j):
+        return distancia[manager.IndexToNode(i)][manager.IndexToNode(j)]
+    dist_cb_idx = routing.RegisterTransitCallback(cb_distancia_pura)
+    routing.AddDimension(dist_cb_idx, 0, 10**9, True, "Distancia")
+    dist_dim = routing.GetDimensionOrDie("Distancia")
+    # Coef 100 = cada 1km de desbalanço de rota custa 100. Calibrado pra ser
+    # ~10% do peso do balanço de paradas (que é o critério principal).
+    dist_dim.SetGlobalSpanCostCoefficient(100)
 
     cap_chegada = (max(0, limite_rota_min * 60 - servico_por_entrega_s)
                    if limite_rota_min is not None else None)
