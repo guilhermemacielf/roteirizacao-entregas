@@ -2,21 +2,22 @@ r"""
 Escrita de volta no Google Sheets: preenche coluna A (entregador) e coluna
 B (ordem da rota) em cada linha de entrega, casando pelo CÓDIGO do pedido.
 
-Diferente do fluxo de LEITURA (que usa o export?format=csv público, sem
-autenticação), escrita exige OAuth — aqui usamos Service Account.
+Autenticação suporta 2 modos (detectados via env var):
 
-Setup uma vez (~10min):
-  1. Cria projeto no Google Cloud Console (console.cloud.google.com)
-  2. Habilita "Google Sheets API"
-  3. Cria Service Account → "Keys" → "Add Key" → JSON → baixa o arquivo
-  4. Pega o client_email do JSON (algo tipo
-     rotear@projeto.iam.gserviceaccount.com)
-  5. Compartilha a planilha com esse email (permissão "Editor")
-  6. Salva o JSON local e configura env var:
-       $env:GOOGLE_APPLICATION_CREDENTIALS = "C:\path\to\sa.json"
-     (ou GOOGLE_SHEETS_SA_FILE — checamos as duas)
+  A) Service Account (GOOGLE_SHEETS_SA_FILE ou GOOGLE_APPLICATION_CREDENTIALS):
+     Pro caso de conta Google sem a política iam.disableServiceAccountKeyCreation.
+     Setup: cria Service Account no GCP, baixa JSON, compartilha planilha
+     com o client_email do JSON como Editor.
 
-Sem isso configurado, o endpoint retorna erro 503 com instruções.
+  B) OAuth de usuário (GOOGLE_SHEETS_OAUTH_CLIENT_FILE):
+     Pro caso da política bloquear chaves de SA (comum em Workspace
+     empresarial e "secure-by-default" de contas com billing ativo). Cria
+     um OAuth Client tipo "Desktop app" no GCP, baixa JSON, aponta a env
+     var pra ele. Na primeira chamada, abre o browser pro usuário autorizar;
+     o token autorizado é salvo em dados/sheets_oauth_token.json e
+     reutilizado nas próximas vezes (sem precisar logar de novo).
+
+Sem nenhum configurado, o endpoint retorna 503 com instruções.
 """
 
 import logging
@@ -25,31 +26,39 @@ import re
 
 log = logging.getLogger(__name__)
 
+# Token persistente do OAuth de usuário (modo B). Salvo na 1ª autorização e
+# reutilizado nas próximas. Tem refresh_token, então nunca expira na prática.
+_OAUTH_TOKEN_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "dados", "sheets_oauth_token.json",
+)
+
+# Scopes mínimos: ler/escrever em planilhas + listar o Drive (necessário
+# pro gspread localizar a planilha por ID).
+_SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
+
 
 class SheetsWriteError(Exception):
     pass
 
 
-def _credenciais_path() -> str | None:
+def _sa_path() -> str | None:
     return (os.environ.get("GOOGLE_SHEETS_SA_FILE")
             or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"))
 
 
-def _abrir_cliente():
-    """Carrega gspread + Service Account. Erros de setup viram SheetsWriteError
-    com instrução útil em vez de stacktrace."""
-    sa = _credenciais_path()
-    if not sa:
+def _oauth_client_path() -> str | None:
+    return os.environ.get("GOOGLE_SHEETS_OAUTH_CLIENT_FILE")
+
+
+def _abrir_cliente_sa(caminho: str):
+    """Modo A: Service Account."""
+    if not os.path.exists(caminho):
         raise SheetsWriteError(
-            "Service Account não configurada. Setup em ~10min: "
-            "1) GCP Console → cria projeto + habilita Sheets API. "
-            "2) Cria Service Account, baixa JSON. "
-            "3) Compartilha a planilha com o client_email do JSON (Editor). "
-            "4) $env:GOOGLE_SHEETS_SA_FILE = 'caminho/sa.json' e reinicia o app."
-        )
-    if not os.path.exists(sa):
-        raise SheetsWriteError(
-            f"Arquivo de Service Account não encontrado: {sa}. "
+            f"Arquivo de Service Account não encontrado: {caminho}. "
             "Confira a env var GOOGLE_SHEETS_SA_FILE."
         )
     try:
@@ -59,9 +68,61 @@ def _abrir_cliente():
             "Dependência 'gspread' não instalada. Rode: pip install -r requirements.txt"
         ) from e
     try:
-        return gspread.service_account(filename=sa)
+        return gspread.service_account(filename=caminho)
     except Exception as e:
-        raise SheetsWriteError(f"falha autenticando com a Service Account: {e}") from e
+        raise SheetsWriteError(f"falha autenticando Service Account: {e}") from e
+
+
+def _abrir_cliente_oauth(client_secrets: str):
+    """Modo B: OAuth de usuário. Na 1ª vez abre o browser pra autorizar; nas
+    próximas usa o token salvo (refresh automático)."""
+    if not os.path.exists(client_secrets):
+        raise SheetsWriteError(
+            f"OAuth Client JSON não encontrado: {client_secrets}. "
+            "Confira GOOGLE_SHEETS_OAUTH_CLIENT_FILE."
+        )
+    try:
+        import gspread
+    except ImportError as e:
+        raise SheetsWriteError(
+            "Dependência 'gspread' não instalada. Rode: pip install -r requirements.txt"
+        ) from e
+    os.makedirs(os.path.dirname(_OAUTH_TOKEN_PATH), exist_ok=True)
+    try:
+        # gspread.oauth: usa client_secrets pra primeira autorização (abre browser
+        # automaticamente), salva token em authorized_user_filename pra reuso.
+        return gspread.oauth(
+            scopes=_SCOPES,
+            credentials_filename=client_secrets,
+            authorized_user_filename=_OAUTH_TOKEN_PATH,
+        )
+    except Exception as e:
+        raise SheetsWriteError(
+            f"falha autenticando OAuth ({e}). Se o browser não abriu, "
+            "tente rodar o app a partir de um terminal local (não SSH)."
+        ) from e
+
+
+def _abrir_cliente():
+    """Tenta Service Account primeiro, OAuth depois. Erros de setup viram
+    SheetsWriteError com instruções."""
+    sa = _sa_path()
+    if sa:
+        return _abrir_cliente_sa(sa)
+
+    oauth_client = _oauth_client_path()
+    if oauth_client:
+        return _abrir_cliente_oauth(oauth_client)
+
+    raise SheetsWriteError(
+        "Autenticação não configurada. Escolha UM dos modos:\n\n"
+        "[A] Service Account: $env:GOOGLE_SHEETS_SA_FILE = 'C:\\path\\sa.json'\n"
+        "    (só funciona se sua conta GCP não tiver bloqueio de SA keys)\n\n"
+        "[B] OAuth de usuário (recomendado p/ contas Workspace ou com "
+        "secure-by-default): $env:GOOGLE_SHEETS_OAUTH_CLIENT_FILE = "
+        "'C:\\path\\oauth_client.json'. Na 1ª chamada abre o browser pra "
+        "autorizar e salva o token; depois é automático."
+    )
 
 
 def _id_planilha(url: str) -> str:
@@ -177,5 +238,5 @@ def escrever_rotas(url_planilha: str, rotas: list[dict]) -> dict:
     return {
         "linhas_atualizadas": n_atualizadas,
         "nao_encontradas":    nao_encontradas,
-        "service_account":    _credenciais_path(),
+        "modo_auth":          "service_account" if _sa_path() else "oauth_usuario",
     }

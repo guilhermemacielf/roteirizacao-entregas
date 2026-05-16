@@ -818,15 +818,10 @@ async function enviarParaSheet() {
     }
     toast(msg);
   } catch (e) {
-    // Setup da Service Account é o erro mais comum — popup com instrução.
-    if (/Service Account/i.test(e.message)) {
-      alert('Configurar Service Account (uma vez, ~10min):\n\n' +
-            '1. console.cloud.google.com → cria projeto + habilita "Google Sheets API"\n' +
-            '2. Cria Service Account → Keys → Add Key → JSON → baixa\n' +
-            '3. Compartilha a planilha com o client_email do JSON (permissão Editor)\n' +
-            '4. No PowerShell: $env:GOOGLE_SHEETS_SA_FILE = "C:\\caminho\\sa.json"\n' +
-            '5. Reinicia o app.py\n\n' +
-            'Detalhe do erro: ' + e.message);
+    // Setup da auth é o erro mais comum — popup com mensagem do backend
+    // (já vem com instruções pros 2 modos: SA ou OAuth).
+    if (/Autenticação não configurada|Service Account|OAuth/i.test(e.message)) {
+      alert('Setup da autenticação:\n\n' + e.message);
     } else {
       toast('Erro: ' + e.message);
     }
