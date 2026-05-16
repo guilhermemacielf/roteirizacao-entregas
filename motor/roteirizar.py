@@ -49,9 +49,10 @@ KMH_URBANO = 30.0
 MAX_PARADAS_LALAMOVE = 6
 
 # Bônus (em metros) descontado do custo do arco quando a entrega cai num
-# bairro de preferência do entregador. 1500m = preferência é SECUNDÁRIA,
-# vale a pena um detour pequeno mas não compromete balanço ou km total.
-BONUS_PREFERENCIA_M = 1500
+# bairro de preferência do entregador. 3000m = secundária mas com peso real,
+# inverte alocação quando 2 entregadores estão similar; balanço (10M) ainda
+# domina nos casos de conflito.
+BONUS_PREFERENCIA_M = 3000
 
 
 def _normalizar_bairro(s: str) -> str:
@@ -201,26 +202,27 @@ def _construir_e_resolver(
         cnt_idx, 0, [max_paradas] * m, True, "Contagem",
     )
     cnt_dim = routing.GetDimensionOrDie("Contagem")
-    # PRIORIDADE 1: balanceamento de paradas é DOMINANTE. 10M por unidade
-    # de span (max - min de paradas entre veículos) faz o solver sempre
-    # preferir 13/13/13 a 17/9/13. Caso reportado: 8 entregadores com
-    # 5/17/etc → resultado ruim. Agora vira o problema mais caro.
-    cnt_dim.SetGlobalSpanCostCoefficient(10_000_000)
+    # PRIORIDADE 1: balanceamento de paradas é DOMINANTE. 100M por unidade
+    # de span (max - min de paradas entre veículos) força ~13/13/13 a 14
+    # mesmo que entregadores morem longe (caso Tamara/Camila em Betim).
+    cnt_dim.SetGlobalSpanCostCoefficient(100_000_000)
 
     if forcar_todos_saem:
-        # Tolerância LARGA (média±3) pra restrição quase sempre ser
-        # satisfeita SEM cair no fallback (onde balanço desaparece).
-        # n=106, m=8: média 13-14 → cada entre 10 e 17 paradas (span 7).
-        # O SpanCost dominante acima empurra pra valores próximos da média.
+        # TUDO SOFT pra evitar fallback (que destruía o balanço quando uma
+        # janela de horário apertada deixava a restrição hard infeasible).
+        # Hierarquia de penalidades:
+        # - Veículo vazio: 10B → nunca acontece a menos que IMPOSSÍVEL
+        # - Rota abaixo da média: 500M por parada faltando → forte incentivo
+        # - Upper hard: média_alta+2 → limite superior pra span máx 3
         media_baixa = n // m
         media_alta = -(-n // m)
-        lo = max(1, media_baixa - 3)
-        hi = min(max_paradas, media_alta + 3)
-        solver = routing.solver()
         for v in range(m):
             cv = cnt_dim.CumulVar(routing.End(v))
-            solver.Add(cv >= lo)
-            solver.Add(cv <= hi)
+            cnt_dim.SetCumulVarSoftLowerBound(routing.End(v), 1, 10_000_000_000)
+            cnt_dim.SetCumulVarSoftLowerBound(routing.End(v),
+                                              media_baixa,
+                                              500_000_000)
+            cv.SetMax(min(max_paradas, media_alta + 2))
 
     routing.SetFixedCostOfAllVehicles(0)
 
@@ -253,17 +255,15 @@ def _construir_e_resolver(
         if cap_chegada is not None:
             cv.SetMax(cap_chegada)
 
-    # Disjunctions: só quando tem limite de tempo E na tentativa de fallback.
-    # Na primeira tentativa (com forcar_todos_saem), Disjunction + restrição
-    # dura ≥1 confunde o solver e gera infeasibility em cenários degenerados
-    # (13 veículos × 36 entregas). Sem Disjunction, ele acha solução; se
-    # houver estouro real de tempo, o fallback (sem ≥1) entra com Disjunction.
-    # Penalidade ENORME (1B): só vale a pena dropar se for absolutamente
-    # impossível atender — evita que o solver droppe oportunisticamente
-    # quando o balanceamento via SpanCost é difícil.
+    # Disjunction: solver pode dropar entregas pagando penalidade. Existe
+    # SÓ pra cobrir entregas com janela de horário apertada que realmente
+    # não cabem em rota nenhuma (sem Disjunction, solver ficaria infeasible).
+    # Penalidade ASTRONÔMICA (10^15): nunca vale a pena dropar a menos que
+    # a entrega seja literalmente impossível de atender. Evita drops
+    # oportunísticos.
     if gerar_lalamove and limite_rota_min is not None and not forcar_todos_saem:
         for i in range(n):
-            routing.AddDisjunction([manager.NodeToIndex(i)], 1_000_000_000)
+            routing.AddDisjunction([manager.NodeToIndex(i)], 10**15)
 
     params = pywrapcp.DefaultRoutingSearchParameters()
     params.first_solution_strategy = (
