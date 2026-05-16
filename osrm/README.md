@@ -1,9 +1,9 @@
-# OSRM self-hosted (MG)
+# OSRM self-hosted (RMBH)
 
-Servidor próprio de matriz de distância/tempo + rotas pra **Minas Gerais**.
-Substitui o OSRM público (`router.project-osrm.org`) que limita ~100 pontos
-por matriz — esse aqui não tem limite e roda em ~10× mais rápido por estar
-local.
+Servidor próprio de matriz de distância/tempo + rotas pra **Região
+Metropolitana de Belo Horizonte**. Substitui o OSRM público
+(`router.project-osrm.org`) que limita ~100 pontos por matriz — esse aqui
+não tem limite e roda mais rápido por estar local.
 
 ## Quando usar
 
@@ -11,11 +11,19 @@ local.
 - Quer geometria real das ruas no mapa (não polyline reta)
 - Quer eliminar dependência de serviço externo
 
+## Por que recortar a RMBH em vez de baixar o estado
+
+O Geofabrik **não publica PBF por estado do Brasil** — só por região
+(sudeste, nordeste, etc.) ou Brasil inteiro. O setup baixa
+`sudeste-latest.osm.pbf` (~340MB) uma vez e recorta o bbox da RMBH com
+`osmium-tool`, gerando um PBF leve (~50-80MB) que o OSRM processa em
+poucos minutos.
+
 ## Pré-requisito
 
 - Docker Desktop instalado e rodando
-- ~2GB de espaço livre (mapa + arquivos OSRM)
-- ~4GB de RAM no `extract` (etapa única de setup)
+- ~1GB de espaço livre (sudeste PBF + RMBH PBF + arquivos OSRM)
+- ~1GB de RAM no `osrm-extract`
 
 ## Setup (uma vez)
 
@@ -33,12 +41,14 @@ chmod +x setup.sh
 ```
 
 Etapas:
-1. Baixa o mapa de MG da Geofabrik (~150MB) → `data/minas-gerais-latest.osm.pbf`
-2. `osrm-extract` — converte OSM em formato OSRM (10-20min)
-3. `osrm-partition` — particiona o grafo MLD (~2min)
-4. `osrm-customize` — otimiza pra queries (~2min)
+1. Build da imagem `local/osmium-tool` via `osmium.Dockerfile` (~1min)
+2. Baixa `sudeste-latest.osm.pbf` da Geofabrik (~340MB)
+3. `osmium extract --bbox=-44.4,-20.3,-43.5,-19.4` → `rmbh.osm.pbf` (~1-2min)
+4. `osrm-extract` → formato OSRM (~2-5min)
+5. `osrm-partition` (MLD) (~30s)
+6. `osrm-customize` (~30s)
 
-Saída: `data/minas-gerais-latest.osrm*` (~500MB).
+Saída: `data/rmbh.osrm*` (~150-250MB).
 
 ## Rodar o servidor
 
@@ -73,25 +83,29 @@ OSM evolui. Pra pegar mudanças recentes (rua nova, número novo):
 
 ```bash
 docker compose down
-rm data/minas-gerais-latest.osm.pbf
+rm data/sudeste-latest.osm.pbf data/rmbh.osm.pbf
 ./setup.sh   # ou .ps1
 docker compose up -d
 ```
 
 Frequência razoável: a cada 1-3 meses.
 
-## Outros estados / Brasil inteiro
+## Aumentar a área coberta
 
-Trocar `URL` no setup:
+Edita `$BBOX` no `setup.ps1` / `setup.sh` (formato `oeste,sul,leste,norte`).
+Pra cobrir mais (ex: incluir Itabira, Sete Lagoas), expande o bbox e
+deleta `data/rmbh.osm.pbf` + `data/rmbh.osrm*` antes de rerodar.
 
-| Mapa | URL | Tamanho PBF | Tempo extract |
-|---|---|---|---|
-| Minas Gerais | `.../sudeste/minas-gerais-latest.osm.pbf` | ~150MB | 10-20min |
-| Sudeste | `.../sudeste-latest.osm.pbf` | ~600MB | 40-60min |
-| Brasil | `.../brazil-latest.osm.pbf` | ~2GB | 2-3h |
+Se precisar do **sudeste inteiro** (cobrir viagens fora da RMBH), pula o
+corte do osmium: aponta o `osrm-extract` direto pra `sudeste-latest.osm.pbf`
+e ajusta os nomes em `docker-compose.yml`. Custo: ~30-45min de extract, ~5GB
+de RAM, ~1.5GB de disco.
 
-Brasil inteiro precisa ~8GB de RAM no extract. Sudeste é o ponto doce
-custo-benefício pra quem entrega só em RMBH + viagens ocasionais.
+| Mapa | Tamanho PBF | Tempo extract |
+|---|---|---|
+| RMBH (bbox) | ~50-80MB | ~2-5min |
+| Sudeste inteiro | ~340MB | ~30-45min |
+| Brasil inteiro | ~2GB | ~2-3h, RAM ~8GB |
 
 ## Hospedagem em produção
 
@@ -103,6 +117,6 @@ Pra rodar 24×7 sem ter o Docker Desktop aberto, sobe num VPS:
 | DigitalOcean | 1 vCPU, 2GB RAM, 50GB SSD | $6 |
 | Contabo | 4 vCPU, 8GB RAM, 100GB NVMe | €5 |
 
-OSRM consome ~500MB RAM em runtime (com mapa de MG carregado). O `extract`
-de uma vez exige 2-4GB temporários — pode ser feito local e copiar os
-arquivos `.osrm*` pro VPS (mais barato que rodar extract no VPS).
+OSRM consome ~200-400MB RAM em runtime (com RMBH carregado). O `extract`
+de uma vez exige ~1GB temporário — pode ser feito local e copiar os
+arquivos `rmbh.osrm*` pro VPS (mais barato que rodar extract no VPS).

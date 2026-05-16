@@ -18,7 +18,7 @@ services:
     # MLD = Multi-Level Dijkstra. Mais rápido pra matriz que CH (Contraction
     # Hierarchies); customize roda em segundos, então atualizar o mapa (ex:
     # baixar PBF novo) não exige horas de pré-processamento.
-    command: ["osrm-routed", "--algorithm", "mld", "--max-table-size", "10000", "/data/minas-gerais-latest.osrm"]
+    command: ["osrm-routed", "--algorithm", "mld", "--max-table-size", "10000", "/data/rmbh.osrm"]
     volumes:
       - ./data:/data:ro
     ports:
