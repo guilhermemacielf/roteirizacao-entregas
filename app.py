@@ -23,7 +23,8 @@ from motor.modelos import CD, Entregador
 from motor.io import carregar_entregas_texto, rotas_para_dict, sheets_para_csv_motor
 from motor.roteirizar import roteirizar
 from motor.matriz import MatrizError
-from motor.geocode import GeocodeError
+from motor.geocode import GeocodeError, carregar_cache, salvar_cache, _normalizar
+from motor.obs import extrair_janela
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -33,6 +34,16 @@ CONFIG_PATH = os.path.join(BASE_DIR, "dados", "config.json")
 EXEMPLO_CSV = os.path.join(BASE_DIR, "dados", "exemplo_entregas.csv")
 
 app = Flask(__name__, static_folder="static")
+
+# Avisa qual OSRM tá sendo usado — o público recusa matrizes >100 pontos,
+# o que pega de surpresa quem rodou só com a planilha de exemplo. Setup
+# do self-hosted: ver `osrm/README.md`.
+_osrm_url = os.environ.get("OSRM_URL", "https://router.project-osrm.org")
+if "project-osrm.org" in _osrm_url:
+    log.warning("OSRM público em uso (%s). Limite ~100 pontos por matriz.", _osrm_url)
+    log.warning("Pra >100 pontos, suba o self-hosted: ver osrm/README.md")
+else:
+    log.info("OSRM em %s (self-hosted, sem limite de pontos)", _osrm_url)
 
 
 @app.route("/")
@@ -123,6 +134,51 @@ def api_sheets():
         "n_falhas":     len(falhas),
         "falhas":       falhas,
         "amostras":     amostras,
+    })
+
+
+@app.route("/api/geocode/manual", methods=["POST"])
+def api_geocode_manual():
+    """Cadastra coordenada manual pra um endereço que não geocodificou.
+    Persiste no cache (chave normalizada) e devolve a entrega formatada
+    pra UI adicionar à lista de entregas sem precisar recarregar tudo.
+
+    Body: {endereco, lat, lng, id?, nome?, obs?}
+    Resposta: dict com {id, nome, lat, lng, obs, janela_inicio, janela_fim}
+    no mesmo formato que a UI usa pras entregas geocodificadas."""
+    d = request.json or {}
+    endereco = (d.get("endereco") or "").strip()
+    nome     = (d.get("nome") or "").strip()
+    obs      = (d.get("obs") or "").strip()
+    cod      = (d.get("id") or "").strip()
+    if not endereco:
+        return jsonify({"erro": "endereco obrigatório"}), 400
+    try:
+        lat = float(d.get("lat"))
+        lng = float(d.get("lng"))
+    except (TypeError, ValueError):
+        return jsonify({"erro": "lat/lng inválidos — use formato decimal (ex: -19.93)"}), 400
+    if not (-90 <= lat <= 90 and -180 <= lng <= 180):
+        return jsonify({"erro": "lat/lng fora dos limites válidos"}), 400
+
+    # Persiste no cache pra próxima vez que esse endereço aparecer
+    # (ex: cliente recorrente que sempre falha no Nominatim) não falhar mais.
+    cache = carregar_cache()
+    cache[_normalizar(endereco)] = [lat, lng]
+    salvar_cache(cache)
+
+    # Mesma extração de horário do pipeline principal (obs + nome combinados —
+    # sufixo "até 10h" pode vir em qualquer um dos dois).
+    ini, fim = extrair_janela(f"{nome} {obs}")
+
+    return jsonify({
+        "id":            cod or "MANUAL",
+        "nome":          nome,
+        "lat":           lat,
+        "lng":           lng,
+        "obs":           obs,
+        "janela_inicio": ini,
+        "janela_fim":    fim,
     })
 
 

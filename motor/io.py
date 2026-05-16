@@ -177,6 +177,7 @@ def sheets_para_csv_motor(
         if coord is None:
             falhas.append({
                 "id": cod, "nome": b["nome"], "endereco": b["endereco"],
+                "obs": b["obs"],
                 "motivo": "endereço não encontrado pelo Nominatim",
             })
             continue

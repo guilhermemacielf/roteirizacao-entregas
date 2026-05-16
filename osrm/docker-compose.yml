@@ -1,0 +1,31 @@
+# OSRM self-hosted — servidor de matriz de distância/tempo + rotas, OSM data.
+#
+# Pré-requisito: rodar `osrm/setup.ps1` (Windows) ou `osrm/setup.sh` (Linux/Mac)
+# UMA VEZ pra baixar o mapa de MG e processar (extract → partition → customize).
+# Os arquivos resultantes ficam em `osrm/data/` (gitignored, ~500MB).
+#
+# Subir o servidor:    docker compose up -d
+# Logs:                docker compose logs -f osrm
+# Parar:               docker compose down
+#
+# Apontar o app pra ele:  $env:OSRM_URL = "http://localhost:5001"   (Windows)
+#                         export OSRM_URL=http://localhost:5001     (Linux/Mac)
+
+services:
+  osrm:
+    image: osrm/osrm-backend:latest
+    container_name: osrm-mg
+    # MLD = Multi-Level Dijkstra. Mais rápido pra matriz que CH (Contraction
+    # Hierarchies); customize roda em segundos, então atualizar o mapa (ex:
+    # baixar PBF novo) não exige horas de pré-processamento.
+    command: ["osrm-routed", "--algorithm", "mld", "--max-table-size", "10000", "/data/minas-gerais-latest.osrm"]
+    volumes:
+      - ./data:/data:ro
+    ports:
+      - "5001:5000"   # OSRM escuta na 5000 dentro do container, expõe na 5001
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:5000/route/v1/driving/-43.93,-19.92;-43.94,-19.93 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

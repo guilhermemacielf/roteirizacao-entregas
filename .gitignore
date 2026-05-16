@@ -7,3 +7,4 @@ venv/
 .DS_Store
 saida/
 *.cache.json
+osrm/data/

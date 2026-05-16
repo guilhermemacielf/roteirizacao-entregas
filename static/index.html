@@ -54,10 +54,17 @@
   .erro{background:#fde7e7;border:1px solid #f3b4b4;color:#9a1c1c;
     border-radius:6px;padding:8px 11px;font-size:13px;margin-bottom:10px}
   .falhas{background:#fef3c7;border:1px solid #f5d27a;color:#92400e;
-    border-radius:6px;padding:8px 10px;font-size:12px;margin-top:8px;max-height:140px;overflow-y:auto}
+    border-radius:6px;padding:10px 12px;font-size:12px;margin-top:8px;max-height:280px;overflow-y:auto}
   .falhas b{display:block;margin-bottom:4px}
-  .falhas .fl{padding:2px 0;border-bottom:1px dashed rgba(146,64,14,.25)}
-  .falhas .fl:last-child{border-bottom:0}
+  .falhas code{background:rgba(146,64,14,.12);padding:0 4px;border-radius:3px;font-family:var(--mono,monospace)}
+  .fl-row{display:flex;flex-direction:column;gap:6px;padding:8px 0;border-bottom:1px dashed rgba(146,64,14,.25)}
+  .fl-row:last-child{border-bottom:0}
+  .fl-info{display:flex;flex-direction:column;gap:1px;font-size:12px;color:var(--text)}
+  .fl-info b{display:inline;margin:0;font-weight:600;color:#92400e}
+  .fl-info .fl-end{color:#6b7280;font-size:11px}
+  .fl-info .fl-obs{color:#9333ea;font-size:11px;font-style:italic}
+  .fl-coords{display:flex;gap:6px}
+  .fl-coord-input{flex:1;padding:5px 8px;border:0.5px solid var(--border);border-radius:6px;font-family:var(--mono,monospace);font-size:12px;background:var(--surface)}
   .url-row{display:flex;gap:6px;margin-bottom:8px}
   .url-row input[type=text]{flex:1;padding:6px 8px;border:1px solid var(--border);
     border-radius:6px;font-family:inherit;font-size:12px;min-width:0}
@@ -163,6 +170,7 @@ const CORES = ['#e6194B','#3cb44b','#4363d8','#f58231','#911eb4','#1abc9c',
 let S = {
   config: null,         // {cd, entregadores}
   entregasCsv: '',      // texto bruto do CSV
+  falhas: [],           // endereços não geocodificados (pra edição manual)
   resultado: null,      // resposta de /api/rotear
   rotaFoco: null,       // índice da rota em foco no mapa
 };
@@ -240,6 +248,7 @@ async function carregarSheet() {
   info.innerHTML = 'Baixando e geocodificando… <span style="color:var(--hint)">' +
     '(primeira vez é mais lenta; depois o cache acelera muito)</span>';
   document.getElementById('falhas-geocode').innerHTML = '';
+  S.falhas = [];
   try {
     const r = await fetch('/api/sheets', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -248,20 +257,99 @@ async function carregarSheet() {
     const d = await r.json();
     if (!r.ok) throw new Error(d.erro || 'falha ao carregar a planilha');
     setEntregas(d.entregas_csv, 'Google Sheets');
-    // Aviso de endereços não geocodificados, se houver — clientes precisam ser
-    // resolvidos manualmente (corrigir endereço na planilha ou colocar lat/lng à mão).
-    if (d.n_falhas > 0) {
-      const lis = d.falhas.map(f =>
-        `<div class="fl">· <b>${f.nome || f.id}</b> — ${f.endereco}</div>`).join('');
-      document.getElementById('falhas-geocode').innerHTML =
-        `<div class="falhas"><b>⚠ ${d.n_falhas} endereço(s) não geocodificado(s)</b>` +
-        `<span style="font-size:11px">essas entregas ficarão de fora — corrija o endereço na planilha e recarregue</span>` +
-        lis + `</div>`;
-    }
+    S.falhas = d.falhas || [];
+    renderFalhas();
   } catch (e) {
     info.innerHTML = `<span style="color:var(--vermelho)">${e.message}</span>`;
   } finally {
     btn.disabled = false; btn.textContent = '📥 Carregar';
+  }
+}
+
+// ── Falhas de geocoding com edição manual de lat/lng ──────
+// Endereços que o Nominatim/Photon não acham (condomínios privados,
+// bairros pouco mapeados, erros de digitação) podem ser resolvidos
+// colando lat/lng manualmente (copia do Google Maps: clica no ponto →
+// aparece "-19.939, -43.981" no topo).
+function renderFalhas() {
+  const cont = document.getElementById('falhas-geocode');
+  const falhas = S.falhas || [];
+  if (!falhas.length) { cont.innerHTML = ''; return; }
+  const linhas = falhas.map((f, idx) => `
+    <div class="fl-row" data-fl-idx="${idx}">
+      <div class="fl-info">
+        <b>${(f.nome || f.id || '—').replace(/</g,'&lt;')}</b>
+        <span class="fl-end">${(f.endereco || '').replace(/</g,'&lt;')}</span>
+        ${f.obs ? `<span class="fl-obs">obs: ${f.obs.replace(/</g,'&lt;')}</span>` : ''}
+      </div>
+      <div class="fl-coords">
+        <input type="text" class="fl-coord-input" placeholder="cole &quot;lat, lng&quot; do Google Maps"
+          onchange="parsearLatLng(this, ${idx})"/>
+        <button class="btn btn-sm btn-azul" onclick="salvarFalhaManual(${idx})">Salvar</button>
+      </div>
+    </div>`).join('');
+  cont.innerHTML =
+    `<div class="falhas">
+       <b>⚠ ${falhas.length} endereço(s) não geocodificado(s)</b>
+       <span style="font-size:11px">cole as coordenadas do Google Maps em cada linha (formato: <code>-19.939, -43.981</code>) e clique Salvar — a entrega entra na rota e a coordenada fica salva pras próximas vezes.</span>
+       ${linhas}
+     </div>`;
+}
+
+// Aceita "lat, lng" ou "lat lng" (com ou sem espaço/parênteses) do
+// Google Maps. Normaliza pro formato "lat lng" pra simplificar o read no salvar.
+function parsearLatLng(input, idx) {
+  const v = input.value.trim().replace(/[()]/g, '');
+  const m = v.match(/(-?\d+(?:\.\d+)?)[,\s]+(-?\d+(?:\.\d+)?)/);
+  if (m) {
+    input.value = `${m[1]}, ${m[2]}`;
+    input.style.borderColor = 'var(--verde,#16a34a)';
+  } else if (v) {
+    input.style.borderColor = 'var(--vermelho,#dc2626)';
+  }
+}
+
+async function salvarFalhaManual(idx) {
+  const f = (S.falhas || [])[idx];
+  if (!f) return;
+  const row = document.querySelector(`.fl-row[data-fl-idx="${idx}"]`);
+  const input = row?.querySelector('.fl-coord-input');
+  if (!input) return;
+  const v = (input.value || '').trim();
+  const m = v.match(/(-?\d+(?:\.\d+)?)[,\s]+(-?\d+(?:\.\d+)?)/);
+  if (!m) return toast('Cole as coordenadas no formato "lat, lng"', 'error');
+  const lat = parseFloat(m[1]), lng = parseFloat(m[2]);
+  try {
+    const r = await fetch('/api/geocode/manual', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: f.id, nome: f.nome, endereco: f.endereco, obs: f.obs || '',
+        lat, lng,
+      }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.erro || 'falha ao salvar');
+    // Adiciona a entrega ao CSV atual — escape de aspas/vírgulas pra não
+    // quebrar o parseCsv quando o nome/obs tiver vírgula.
+    const esc = (s) => {
+      const t = String(s ?? '');
+      return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+    };
+    const ji = d.janela_inicio == null ? '' : d.janela_inicio;
+    const jf = d.janela_fim    == null ? '' : d.janela_fim;
+    const nova = [esc(d.id), esc(d.nome), d.lat, d.lng, esc(d.obs), ji, jf].join(',');
+    if (!S.entregasCsv.trim()) {
+      S.entregasCsv = 'id,nome,lat,lng,obs,janela_inicio,janela_fim\n' + nova;
+    } else {
+      S.entregasCsv = S.entregasCsv.replace(/\n*$/, '') + '\n' + nova;
+    }
+    // Remove a falha da lista, re-renderiza tudo
+    S.falhas.splice(idx, 1);
+    renderFalhas();
+    setEntregas(S.entregasCsv, 'Google Sheets + manual');
+    toast(`✓ ${d.nome || d.id} adicionado à rota`);
+  } catch (e) {
+    toast('Erro: ' + e.message, 'error');
   }
 }
 
