@@ -122,6 +122,7 @@
       </div>
       <div class="info" id="info-entregas">Nenhuma entrega carregada. Cole a URL do Sheets (planilha Instabuy, compartilhada como "qualquer pessoa com o link") ou suba um CSV com <b>id, lat, lng</b>.</div>
       <div id="falhas-geocode"></div>
+      <div id="aviso-distantes"></div>
     </div>
 
     <!-- CONFIG -->
@@ -407,26 +408,95 @@ function parseCsv(texto) {
 }
 
 // ── Mapa: entradas (antes de rotear) ──────────────────────
+const DIST_SUSPEITA_KM = 50;  // ponto acima disso provavelmente é geocode errado
+
+function haversineKm(aLat, aLng, bLat, bLng) {
+  const R = 6371, rad = x => x * Math.PI / 180;
+  const dLat = rad(bLat - aLat), dLng = rad(bLng - aLng);
+  const a = Math.sin(dLat / 2) ** 2 +
+            Math.cos(rad(aLat)) * Math.cos(rad(bLat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
 function desenharEntrada() {
   camadaEntrada.clearLayers();
   if (S.resultado) return;  // se já tem resultado, o mapa mostra as rotas
-  if (S.config && S.config.cd && S.config.cd.lat != null) {
-    marcadorCD(S.config.cd).addTo(camadaEntrada);
-  }
+  const cd = S.config?.cd;
+  if (cd && cd.lat != null) marcadorCD(cd).addTo(camadaEntrada);
+
   const pts = parseCsv(S.entregasCsv);
   const bounds = [];
+  const distantes = [];
   pts.forEach(p => {
+    const distKm = cd ? haversineKm(cd.lat, cd.lng, p.lat, p.lng) : 0;
+    const suspeito = cd && distKm > DIST_SUSPEITA_KM;
+    if (suspeito) distantes.push({ ...p, distKm });
+    const cor      = suspeito ? '#dc2626' : '#1d4ed8';
+    const fillCor  = suspeito ? '#fca5a5' : '#2563eb';
     L.circleMarker([p.lat, p.lng], {
-      radius: 4, color: '#94a3b8', fillColor: '#cbd5e1', fillOpacity: .9, weight: 1
-    }).bindPopup(
-      `<b>${p.nome || p.id}</b>` +
-      (p.nome ? `<br><span style="color:#888">${p.id}</span>` : '') +
-      `<br>${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}`)
+      radius: suspeito ? 8 : 6, color: cor, fillColor: fillCor,
+      fillOpacity: 1, weight: 2
+    }).bindPopup(popupPonto(p, distKm, suspeito))
       .addTo(camadaEntrada);
     bounds.push([p.lat, p.lng]);
   });
-  if (S.config && S.config.cd) bounds.push([S.config.cd.lat, S.config.cd.lng]);
+  if (cd) bounds.push([cd.lat, cd.lng]);
   if (bounds.length > 1) map.fitBounds(bounds, { padding: [40, 40] });
+  renderAvisoDistantes(distantes);
+}
+
+function popupPonto(p, distKm, suspeito) {
+  const id = String(p.id).replace(/'/g, "\\'");
+  const aviso = suspeito
+    ? `<div style="color:#dc2626;font-weight:600;margin-top:4px">⚠ ${distKm.toFixed(1)} km do CD — confira ou remova</div>`
+    : '';
+  return `<b>${p.nome || p.id}</b>`
+       + (p.nome ? `<br><span style="color:#888">${p.id}</span>` : '')
+       + `<br>${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}`
+       + (distKm ? `<br><span style="color:#888">${distKm.toFixed(1)} km do CD</span>` : '')
+       + aviso
+       + `<div style="margin-top:6px"><button class="btn btn-sm" style="color:#dc2626" onclick="removerPonto('${id}')">× Remover do mapa</button></div>`;
+}
+
+function renderAvisoDistantes(distantes) {
+  const cont = document.getElementById('aviso-distantes');
+  if (!cont) return;
+  if (!distantes.length) { cont.innerHTML = ''; return; }
+  const linhas = distantes.map(d =>
+    `<div style="display:flex;gap:6px;align-items:center;padding:3px 0;border-bottom:1px dashed rgba(154,28,28,.2)">
+       <b style="flex:1;font-size:12px">${d.nome || d.id}</b>
+       <span style="font-size:11px;font-family:var(--mono,monospace)">${d.distKm.toFixed(1)} km</span>
+       <button class="btn btn-sm" style="color:#dc2626;padding:2px 8px" onclick="removerPonto('${String(d.id).replace(/'/g, "\\'")}')">×</button>
+     </div>`).join('');
+  cont.innerHTML =
+    `<div class="erro" style="margin-top:8px">
+       <b>⚠ ${distantes.length} ponto(s) a mais de ${DIST_SUSPEITA_KM} km do CD</b>
+       <div style="font-size:11px;margin-bottom:4px">provavelmente geocode errado (rua com mesmo nome em outra cidade). Confira ou remova:</div>
+       ${linhas}
+     </div>`;
+}
+
+function removerPonto(id) {
+  // Remove a linha do CSV pelo campo id (case-sensitive). Se a entrega
+  // veio do fluxo Sheets, o id é o CÓDIGO do pedido.
+  const linhas = S.entregasCsv.split(/\r?\n/);
+  if (linhas.length < 2) return;
+  const cab = parseCsvRow(linhas[0]).map(c => c.trim().toLowerCase());
+  const iId = cab.indexOf('id');
+  if (iId < 0) return;
+  const filtradas = [linhas[0]];
+  let removidas = 0;
+  for (let k = 1; k < linhas.length; k++) {
+    if (!linhas[k].trim()) continue;
+    const c = parseCsvRow(linhas[k]);
+    if ((c[iId] || '').trim() === id) { removidas++; continue; }
+    filtradas.push(linhas[k]);
+  }
+  if (!removidas) return toast(`Entrega ${id} não encontrada no CSV`);
+  S.entregasCsv = filtradas.join('\n');
+  setEntregas(S.entregasCsv, 'editado');
+  toast(`✓ ${id} removida`);
+  map.closePopup();
 }
 
 function marcadorCD(cd) {
@@ -507,17 +577,16 @@ function renderResultado() {
   if (res.total_entregas !== d.n_entregas_entrada) {
     html += `<div class="aviso">⚠ ${d.n_entregas_entrada} entregas na entrada, ${res.total_entregas} roteadas.</div>`;
   }
-  if (res.abaixo_min && res.abaixo_min.length) {
-    html += `<div class="aviso">⚠ ${res.abaixo_min.length} rota(s) abaixo de 10 paradas: ${res.abaixo_min.join(', ')}</div>`;
-  }
   html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
     <span style="font-size:12px;color:var(--muted)">${d.rotas.length} rota(s)</span>
     <button class="btn btn-sm" onclick="verTodas()">Ver todas no mapa</button>
   </div>`;
   html += d.rotas.map((r, i) => {
     const cor = CORES[i % CORES.length];
-    const quem = r.entregador ? r.entregador.nome
-      : `<span class="badge-lala">LALAMOVE</span> rota candidata`;
+    const nomeEnt = r.entregador?.nome || '—';
+    const quem = r.candidata_lalamove
+      ? `<span class="badge-lala">📱 ${nomeEnt}</span>`
+      : nomeEnt;
     const paradas = r.paradas.map(p => {
       // Mostra nome quando vem (fluxo Sheets); senão cai no id (fluxo CSV "id,lat,lng")
       const titulo = p.nome || p.id;
@@ -566,11 +635,13 @@ function desenharRotas() {
       }).bindPopup(
         `<b>${p.nome || p.id}</b> · parada ${p.ordem}` +
         (p.nome ? `<br><span style="color:#888">${p.id}</span>` : '') +
-        `<br>${r.entregador ? r.entregador.nome : 'Lalamove'}` +
+        `<br>${r.entregador?.nome || 'sem entregador'}` +
         `<br>chega ~${hms(p.chegada_estimada_s)}${p.obs ? '<br><i>' + p.obs + '</i>' : ''}`)
         .addTo(camadaRotas);
     });
-    if (r.entregador) {
+    // Marker de "casa" só pros entregadores reais. Lalamove tem entregador
+    // virtual com lat/lng = CD (não desenha 🏠 em cima do CD).
+    if (r.entregador && !r.candidata_lalamove) {
       pts.push([r.entregador.lat, r.entregador.lng]);
       todos.push([r.entregador.lat, r.entregador.lng]);
       L.marker([r.entregador.lat, r.entregador.lng], {
@@ -593,7 +664,7 @@ function focarRota(i) {
     c.classList.toggle('foco', k === i));
   const r = d.rotas[i];
   const pts = [[d.cd.lat, d.cd.lng], ...r.paradas.map(p => [p.lat, p.lng])];
-  if (r.entregador) pts.push([r.entregador.lat, r.entregador.lng]);
+  if (r.entregador && !r.candidata_lalamove) pts.push([r.entregador.lat, r.entregador.lng]);
   if (pts.length > 1) map.fitBounds(pts, { padding: [60, 60] });
 }
 
@@ -613,7 +684,7 @@ function exportarCsv() {
     'chegada_estimada_s', 'obs', 'rota_km', 'rota_duracao_s', 'candidata_lalamove'
   ]];
   d.rotas.forEach(r => {
-    const quem = r.entregador ? r.entregador.nome : 'LALAMOVE';
+    const quem = r.entregador?.nome || 'LALAMOVE';
     r.paradas.forEach(p => {
       linhas.push([
         quem, p.ordem, p.id,
