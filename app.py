@@ -72,6 +72,7 @@ def api_config():
                 "lat": e.get("lat"),
                 "lng": e.get("lng"),
                 "disponivel": e.get("disponivel", True),
+                "preferencias": e.get("preferencias", []),
             }
             for e in cfg.get("entregadores", [])
         ],
@@ -238,6 +239,7 @@ def api_rotear():
             entregadores.append(Entregador(
                 id=str(e["id"]), nome=e.get("nome") or str(e["id"]),
                 lat=float(e["lat"]), lng=float(e["lng"]),
+                preferencias=[p.strip() for p in (e.get("preferencias") or []) if p and p.strip()],
             ))
         except (KeyError, TypeError, ValueError):
             return jsonify({"erro": f"entregador inválido: {e}"}), 400

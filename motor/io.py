@@ -23,7 +23,7 @@ import unicodedata
 import requests
 
 from motor.modelos import Entrega, Entregador, CD, Rota
-from motor.geocode import geocodificar_lista
+from motor.geocode import geocodificar_lista, _extrair_bairro_cidade
 from motor.obs import extrair_janela
 from motor.matriz import rota_geometria
 
@@ -126,15 +126,16 @@ def baixar_sheet_csv(url: str) -> str:
 
 # ── Pipeline: Sheet → CSV pronto pro motor ─────────────────────
 def _csv_motor(linhas: list[dict]) -> str:
-    """Serializa entregas já resolvidas (com lat/lng e janela) no CSV que
-    `carregar_entregas_texto` consome. Mantém o mesmo formato do upload
+    """Serializa entregas já resolvidas (com lat/lng, bairro e janela) no CSV
+    que `carregar_entregas_texto` consome. Mantém o mesmo formato do upload
     manual pra reaproveitar o fluxo da UI."""
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["id", "nome", "lat", "lng", "obs", "janela_inicio", "janela_fim"])
+    w.writerow(["id", "nome", "lat", "lng", "bairro", "obs", "janela_inicio", "janela_fim"])
     for e in linhas:
         w.writerow([
-            e["id"], e["nome"], e["lat"], e["lng"], e["obs"],
+            e["id"], e["nome"], e["lat"], e["lng"],
+            e.get("bairro", ""), e["obs"],
             "" if e["janela_inicio"] is None else e["janela_inicio"],
             "" if e["janela_fim"]    is None else e["janela_fim"],
         ])
@@ -185,12 +186,16 @@ def sheets_para_csv_motor(
         # O horário pode estar no sufixo do NOME (FÓRMULA) e/ou nas observações.
         # Concat com espaço entre os dois pra não colar palavras.
         ini, fim = extrair_janela(f"{b['nome']} {b['obs']}")
+        # Bairro extraído do endereço bruto — usado pra preferências por
+        # bairro do entregador. None vira string vazia.
+        bairro, _ = _extrair_bairro_cidade(b["endereco"])
         ok.append({
             "id":             cod,
             "nome":           b["nome"],
             "endereco":       b["endereco"],
             "lat":            coord[0],
             "lng":            coord[1],
+            "bairro":         bairro or "",
             "obs":            b["obs"],
             "janela_inicio":  ini,
             "janela_fim":     fim,
@@ -217,6 +222,7 @@ def _parse_entregas(reader: csv.DictReader) -> list[Entrega]:
             lng=lng,
             nome=(row.get("nome") or "").strip(),
             obs=(row.get("obs") or "").strip(),
+            bairro=(row.get("bairro") or "").strip(),
             janela_inicio=int(ji) if ji not in (None, "", "None") else None,
             janela_fim=int(jf) if jf not in (None, "", "None") else None,
         ))
@@ -249,6 +255,7 @@ def carregar_config(caminho_json: str) -> tuple[CD, list[Entregador]]:
             nome=e["nome"],
             lat=float(e["lat"]),
             lng=float(e["lng"]),
+            preferencias=[p.strip() for p in (e.get("preferencias") or []) if p and p.strip()],
         )
         for e in cfg["entregadores"]
         if e.get("disponivel", True)

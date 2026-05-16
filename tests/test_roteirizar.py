@@ -190,6 +190,40 @@ def test_balanco_paradas_dentro_da_tolerancia():
     assert span <= 10, f"span {span} excede tolerância sintética: paradas={paradas}"
 
 
+def test_preferencia_de_bairro():
+    """Entrega em bairro preferido por um entregador tende a cair pra ele.
+    2 entregadores equidistantes do CD, 2 entregas no bairro X. Driver0 prefere
+    bairro X → ambas devem cair pra ele."""
+    cd = CD(-19.92, -43.94)
+    # 4 entregas: 2 no bairro 'pampulha', 2 no bairro 'savassi'. Coords parecidas.
+    entregas = [
+        Entrega("E1", -19.85, -43.97, bairro="Pampulha"),
+        Entrega("E2", -19.86, -43.97, bairro="Pampulha"),
+        Entrega("E3", -19.94, -43.94, bairro="Savassi"),
+        Entrega("E4", -19.95, -43.94, bairro="Savassi"),
+    ]
+    entregadores = [
+        Entregador("D0", "DriverPampulha", -19.85, -43.97, preferencias=["Pampulha"]),
+        Entregador("D1", "DriverSavassi",  -19.94, -43.94, preferencias=["Savassi"]),
+    ]
+    coords = ([(e.lat, e.lng) for e in entregas]
+              + [(cd.lat, cd.lng)]
+              + [(d.lat, d.lng) for d in entregadores])
+    rotas = roteirizar(entregas, entregadores, cd,
+                       min_paradas=1, max_paradas=4,
+                       matriz_pronta=_matriz_grade(coords), tempo_limite_s=5,
+                       limite_rota_min=None)
+    normais = {r.entregador.id: [p.entrega.id for p in r.paradas]
+               for r in rotas if not r.candidata_lalamove}
+    # DriverPampulha deve pegar E1, E2; DriverSavassi deve pegar E3, E4.
+    pampulha_ids = set(normais.get("D0", []))
+    savassi_ids = set(normais.get("D1", []))
+    assert pampulha_ids == {"E1", "E2"}, \
+        f"DriverPampulha pegou {pampulha_ids}, esperava E1+E2"
+    assert savassi_ids == {"E3", "E4"}, \
+        f"DriverSavassi pegou {savassi_ids}, esperava E3+E4"
+
+
 if __name__ == "__main__":
     test_max_capacidade_respeitada()
     print("✓ test_max_capacidade_respeitada")
@@ -205,4 +239,6 @@ if __name__ == "__main__":
     print("✓ test_sem_lalamove_quando_cabe")
     test_balanco_paradas_dentro_da_tolerancia()
     print("✓ test_balanco_paradas_dentro_da_tolerancia")
+    test_preferencia_de_bairro()
+    print("✓ test_preferencia_de_bairro")
     print("\nTodos os testes passaram.")

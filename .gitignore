@@ -8,3 +8,7 @@ venv/
 saida/
 *.cache.json
 osrm/data/
+# Secrets do Google OAuth/Service Account
+oauth_client.json
+sa.json
+dados/sheets_oauth_token.json

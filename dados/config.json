@@ -1,23 +1,23 @@
 {
-  "_comentario": "CD + entregadores. Coordenadas geocodificadas (Nominatim/OSM) a partir dos endereços reais. 'disponivel: false' tira o entregador da roteirização do dia. ATENÇÃO: 3 endereços não foram encontrados no número exato e ficaram no centro do bairro — confira/ajuste lat/lng de Tamara, Camila, Cristiano e Edilene.",
+  "_comentario": "CD + entregadores. Coordenadas geocodificadas (Nominatim/OSM) a partir dos endereços reais. 'disponivel: false' tira o entregador da roteirização do dia. 'preferencias' é uma lista de bairros que o entregador prefere atender — o motor desconta 5km do custo do arco quando a entrega cai num desses bairros, então o solver tende a alocar. Sem preferencias = atende qualquer lugar. ATENÇÃO: 4 endereços não foram encontrados no número exato e ficaram no centro do bairro — confira/ajuste lat/lng de Tamara, Camila, Cristiano e Edilene.",
   "cd": {
     "nome": "CD - Ferreira Viana",
     "lat": -19.9398004,
     "lng": -43.9817874
   },
   "entregadores": [
-    { "id": "E1",  "nome": "Cristina",      "lat": -19.9441832, "lng": -43.9838821, "disponivel": true },
-    { "id": "E2",  "nome": "Tamara",        "lat": -20.0192692, "lng": -44.0335522, "disponivel": true },
-    { "id": "E3",  "nome": "João",          "lat": -19.9196157, "lng": -44.0046092, "disponivel": true },
-    { "id": "E4",  "nome": "José",          "lat": -19.9612787, "lng": -43.9959463, "disponivel": true },
-    { "id": "E5",  "nome": "Leia",          "lat": -19.9402087, "lng": -43.9777962, "disponivel": true },
-    { "id": "E6",  "nome": "Karina",        "lat": -19.8404821, "lng": -43.9172332, "disponivel": true },
-    { "id": "E7",  "nome": "Camila",        "lat": -20.0192692, "lng": -44.0335522, "disponivel": true },
-    { "id": "E8",  "nome": "Ana Carolina",  "lat": -19.9378709, "lng": -43.9595124, "disponivel": true },
-    { "id": "E9",  "nome": "Cristiano",     "lat": -19.9999760, "lng": -44.0144297, "disponivel": true },
-    { "id": "E10", "nome": "Edilene",       "lat": -19.8675063, "lng": -43.9513937, "disponivel": true },
-    { "id": "E11", "nome": "Emerson",       "lat": -19.9398004, "lng": -43.9817874, "disponivel": true },
-    { "id": "E12", "nome": "Alex",          "lat": -19.9398004, "lng": -43.9817874, "disponivel": true },
-    { "id": "E13", "nome": "Daniel",        "lat": -19.9398004, "lng": -43.9817874, "disponivel": true }
+    { "id": "E1",  "nome": "Cristina",      "lat": -19.9441832, "lng": -43.9838821, "disponivel": true, "preferencias": [] },
+    { "id": "E2",  "nome": "Tamara",        "lat": -20.0192692, "lng": -44.0335522, "disponivel": true, "preferencias": [] },
+    { "id": "E3",  "nome": "João",          "lat": -19.9196157, "lng": -44.0046092, "disponivel": true, "preferencias": [] },
+    { "id": "E4",  "nome": "José",          "lat": -19.9612787, "lng": -43.9959463, "disponivel": true, "preferencias": [] },
+    { "id": "E5",  "nome": "Leia",          "lat": -19.9402087, "lng": -43.9777962, "disponivel": true, "preferencias": [] },
+    { "id": "E6",  "nome": "Karina",        "lat": -19.8404821, "lng": -43.9172332, "disponivel": true, "preferencias": [] },
+    { "id": "E7",  "nome": "Camila",        "lat": -20.0192692, "lng": -44.0335522, "disponivel": true, "preferencias": [] },
+    { "id": "E8",  "nome": "Ana Carolina",  "lat": -19.9378709, "lng": -43.9595124, "disponivel": true, "preferencias": [] },
+    { "id": "E9",  "nome": "Cristiano",     "lat": -19.9999760, "lng": -44.0144297, "disponivel": true, "preferencias": [] },
+    { "id": "E10", "nome": "Edilene",       "lat": -19.8675063, "lng": -43.9513937, "disponivel": true, "preferencias": [] },
+    { "id": "E11", "nome": "Emerson",       "lat": -19.9398004, "lng": -43.9817874, "disponivel": true, "preferencias": [] },
+    { "id": "E12", "nome": "Alex",          "lat": -19.9398004, "lng": -43.9817874, "disponivel": true, "preferencias": [] },
+    { "id": "E13", "nome": "Daniel",        "lat": -19.9398004, "lng": -43.9817874, "disponivel": true, "preferencias": [] }
   ]
 }

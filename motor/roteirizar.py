@@ -33,6 +33,7 @@ Objetivo: minimizar a QUILOMETRAGEM total (metros, via matriz OSRM).
 
 import logging
 import math
+import unicodedata
 from ortools.constraint_solver import routing_enums_pb2, pywrapcp
 
 from motor.modelos import Entrega, Entregador, CD, Parada, Rota
@@ -46,6 +47,18 @@ KMH_URBANO = 30.0
 
 # Cada rota Lalamove agrupa até 6 entregas.
 MAX_PARADAS_LALAMOVE = 6
+
+# Bônus (em metros) descontado do custo do arco quando a entrega cai num
+# bairro de preferência do entregador. 5000m = "vale a pena fazer um detour
+# de até 5km pra dar essa entrega ao entregador que prefere o bairro".
+BONUS_PREFERENCIA_M = 5000
+
+
+def _normalizar_bairro(s: str) -> str:
+    """Lower + sem acento + espaços colapsados — pra comparar bairros sem
+    se preocupar com 'Pampulha' vs 'pampulha' vs 'Pampulha '."""
+    s = unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode("ascii")
+    return " ".join(s.lower().split())
 
 
 def _haversine_km(a_lat: float, a_lng: float, b_lat: float, b_lng: float) -> float:
@@ -141,10 +154,38 @@ def _construir_e_resolver(
                                            [idx_casa[v] for v in range(m)])
     routing = pywrapcp.RoutingModel(manager)
 
-    def cb_distancia(i, j):
-        return distancia[manager.IndexToNode(i)][manager.IndexToNode(j)]
-    routing.SetArcCostEvaluatorOfAllVehicles(
-        routing.RegisterTransitCallback(cb_distancia))
+    # Preferências de bairro por veículo (normalizadas). Se algum entregador
+    # tem preferências, usa custo POR VEÍCULO (descontando BONUS_PREFERENCIA_M
+    # quando o bairro da entrega bate). Senão, custo único pra todos (mais
+    # leve — registra só 1 callback).
+    prefs_por_v = [
+        {_normalizar_bairro(p) for p in ent.preferencias if p}
+        for ent in entregadores
+    ]
+    tem_preferencias = any(prefs_por_v)
+
+    if tem_preferencias:
+        # Um callback por veículo, com lookup nas preferências dele.
+        for v in range(m):
+            prefs_v = prefs_por_v[v]
+            def _cb_factory(prefs=prefs_v):
+                def cb(i, j):
+                    no_i = manager.IndexToNode(i)
+                    no_j = manager.IndexToNode(j)
+                    custo = distancia[no_i][no_j]
+                    if no_j < n and prefs:
+                        bairro = _normalizar_bairro(entregas[no_j].bairro)
+                        if bairro and bairro in prefs:
+                            custo = max(0, custo - BONUS_PREFERENCIA_M)
+                    return custo
+                return cb
+            cb_idx_v = routing.RegisterTransitCallback(_cb_factory())
+            routing.SetArcCostEvaluatorOfVehicle(cb_idx_v, v)
+    else:
+        def cb_distancia(i, j):
+            return distancia[manager.IndexToNode(i)][manager.IndexToNode(j)]
+        routing.SetArcCostEvaluatorOfAllVehicles(
+            routing.RegisterTransitCallback(cb_distancia))
 
     def cb_tempo(i, j):
         no_i = manager.IndexToNode(i)

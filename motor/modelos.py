@@ -11,6 +11,7 @@ class Entrega:
     lng: float
     nome: str = ""             # nome do cliente (exibição) — pode repetir
     obs: str = ""              # observação livre (ex: "só após 14h")
+    bairro: str = ""           # bairro extraído do endereço (pra preferências de entregador)
     # Janela de horário opcional, em minutos desde o início da roteirização.
     # None = sem restrição (entrega pode ser feita a qualquer momento).
     janela_inicio: int | None = None
@@ -24,6 +25,9 @@ class Entregador:
     nome: str
     lat: float                 # endereço de casa
     lng: float
+    # Bairros que o entregador prefere atender (string livre — comparada
+    # normalizada/sem acento contra Entrega.bairro). Vazia = sem preferência.
+    preferencias: list[str] = field(default_factory=list)
 
 
 @dataclass

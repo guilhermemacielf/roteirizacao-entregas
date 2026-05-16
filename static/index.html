@@ -214,13 +214,19 @@ function renderConfig() {
   document.getElementById('info-cd').innerHTML =
     `<b>${cd.nome}</b> · ${Number(cd.lat).toFixed(4)}, ${Number(cd.lng).toFixed(4)}`;
   const cont = document.getElementById('lista-entregadores');
-  cont.innerHTML = entregadores.map((e, i) => `
-    <label class="ent-item">
+  cont.innerHTML = entregadores.map((e, i) => {
+    const prefs = (e.preferencias || []).filter(Boolean);
+    const prefsLabel = prefs.length
+      ? `<div style="font-size:10px;color:var(--hint);margin-left:25px;line-height:1.2">prefere: ${prefs.join(', ')}</div>`
+      : '';
+    return `<label class="ent-item" style="flex-wrap:wrap">
       <input type="checkbox" class="chk-ent" data-id="${e.id}" ${e.disponivel ? 'checked' : ''}/>
       <span class="dot" style="background:${CORES[i % CORES.length]}"></span>
       <span class="nm">${e.nome}</span>
       <span style="font-size:11px;color:var(--hint)">${e.id}</span>
-    </label>`).join('');
+      ${prefsLabel}
+    </label>`;
+  }).join('');
 }
 
 // ── Carregar entregas ─────────────────────────────────────
