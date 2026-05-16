@@ -6,18 +6,279 @@
     "lng": -43.9817874
   },
   "entregadores": [
-    { "id": "E1",  "nome": "Cristina",      "lat": -19.9441832, "lng": -43.9838821, "disponivel": true, "preferencias": [] },
-    { "id": "E2",  "nome": "Tamara",        "lat": -20.0192692, "lng": -44.0335522, "disponivel": true, "preferencias": [] },
-    { "id": "E3",  "nome": "João",          "lat": -19.9196157, "lng": -44.0046092, "disponivel": true, "preferencias": [] },
-    { "id": "E4",  "nome": "José",          "lat": -19.9612787, "lng": -43.9959463, "disponivel": true, "preferencias": [] },
-    { "id": "E5",  "nome": "Leia",          "lat": -19.9402087, "lng": -43.9777962, "disponivel": true, "preferencias": [] },
-    { "id": "E6",  "nome": "Karina",        "lat": -19.8404821, "lng": -43.9172332, "disponivel": true, "preferencias": [] },
-    { "id": "E7",  "nome": "Camila",        "lat": -20.0192692, "lng": -44.0335522, "disponivel": true, "preferencias": [] },
-    { "id": "E8",  "nome": "Ana Carolina",  "lat": -19.9378709, "lng": -43.9595124, "disponivel": true, "preferencias": [] },
-    { "id": "E9",  "nome": "Cristiano",     "lat": -19.9999760, "lng": -44.0144297, "disponivel": true, "preferencias": [] },
-    { "id": "E10", "nome": "Edilene",       "lat": -19.8675063, "lng": -43.9513937, "disponivel": true, "preferencias": [] },
-    { "id": "E11", "nome": "Emerson",       "lat": -19.9398004, "lng": -43.9817874, "disponivel": true, "preferencias": [] },
-    { "id": "E12", "nome": "Alex",          "lat": -19.9398004, "lng": -43.9817874, "disponivel": true, "preferencias": [] },
-    { "id": "E13", "nome": "Daniel",        "lat": -19.9398004, "lng": -43.9817874, "disponivel": true, "preferencias": [] }
-  ]
+    {
+      "id": "E1",
+      "nome": "Cristina",
+      "lat": -19.9380495,
+      "lng": -43.9820687,
+      "endereco": "R. Lagoa da Prata, 803 - Salgado Filho, Belo Horizonte - MG, 30550-000",
+      "disponivel": true,
+      "preferencias": [
+        "Lourdes",
+        "Centro",
+        "Boa Viagem",
+        "Santo Agostinho"
+      ]
+    },
+    {
+      "id": "E2",
+      "nome": "Tamara",
+      "lat": -20.0276349,
+      "lng": -44.0261228,
+      "endereco": "R. Alberto Trópia Lopes, 53 - Independência, Belo Horizonte - MG, 30672-480",
+      "disponivel": true,
+      "preferencias": [
+        "Ouro Velho",
+        "Alphaville",
+        "Jardim Canadá",
+        "Vale do Sereno",
+        "Belvedere",
+        "Ipê",
+        "Jambreiro",
+        "Vale dos Cristais",
+        "Ville de Montagne",
+        "Pau Pombo",
+        "Retiro do Chalé",
+        "Vila Alpina",
+        "Vila Del Rey",
+        "Ouro Velho",
+        "Jambreiro",
+        "Vila Castela",
+        "Vale dos Cristais",
+        "Ville de Montagne",
+        "Pau Pombo",
+        "Mirante da Mata",
+        "VIla do Ouro",
+        "Veredas das Gerais",
+        "Veredas das Geraes",
+        "Vila Alpina",
+        "Quintas do sol",
+        "Cabeceiras",
+        "Estância Serrana",
+        "Bosque da Ribeira",
+        "Retiro das Pedras",
+        "Jardim Canadá",
+        "Alphaville",
+        "Morro do Chapéu",
+        "Retiro do Chalé",
+        "Casa Branca",
+        "Vila d'El Rey",
+        "Vial Del Rey",
+        "Vila Del Rey"
+      ]
+    },
+    {
+      "id": "E3",
+      "nome": "João",
+      "lat": -19.9196157,
+      "lng": -44.0046092,
+      "endereco": "R. Nelson Soares, 16 - Dom Bosco, Belo Horizonte - MG, 30850-620",
+      "disponivel": false,
+      "preferencias": []
+    },
+    {
+      "id": "E4",
+      "nome": "José",
+      "lat": -19.9612787,
+      "lng": -43.9959463,
+      "endereco": "R. Cap. Faria, 98 - Betânia, Belo Horizonte - MG, 30590-262",
+      "disponivel": false,
+      "preferencias": [
+        "Santo Antonio",
+        "Luxemburgo",
+        "Vila Paris",
+        "Santa Lúcia"
+      ]
+    },
+    {
+      "id": "E5",
+      "nome": "Leia",
+      "lat": -19.9483596,
+      "lng": -43.973011,
+      "endereco": "R. Corcovado, 901 - Jardim America, Belo Horizonte - MG, 30421-415",
+      "disponivel": true,
+      "preferencias": [
+        "Carmo",
+        "Sion",
+        "Cruzeiro",
+        "Serra"
+      ]
+    },
+    {
+      "id": "E6",
+      "nome": "Karina",
+      "lat": -19.8404821,
+      "lng": -43.9172332,
+      "endereco": "R. Rodrigo de Melo Franco, 58 - Tupi, Belo Horizonte - MG, 31844-070",
+      "disponivel": true,
+      "preferencias": [
+        "União",
+        "Cidade Nova",
+        "Sagrada Família",
+        "Santa Tereza",
+        "Esplanada",
+        "Fernão Dias",
+        "Floresta",
+        "Colégio Batista"
+      ]
+    },
+    {
+      "id": "E7",
+      "nome": "Camila",
+      "lat": -20.0276349,
+      "lng": -44.0261228,
+      "endereco": "R. Alberto Trópia Lopes, 53 - Independência, Belo Horizonte - MG, 30672-480",
+      "disponivel": true,
+      "preferencias": [
+        "Barreiro",
+        "Riacho Das Pedras",
+        "Fonte Grande",
+        "Contagem",
+        "Milionários",
+        "Betim"
+      ]
+    },
+    {
+      "id": "E8",
+      "nome": "Ana Carolina",
+      "lat": -19.9369781,
+      "lng": -43.9632191,
+      "endereco": "Rua Marechal Bitencourt, 373 - Gutierrez, Belo Horizonte - MG, 30441-114",
+      "disponivel": true,
+      "preferencias": [
+        "Planalto",
+        "Itapoã",
+        "Dona Clara",
+        "Santa Branca",
+        "Santa Amélia"
+      ]
+    },
+    {
+      "id": "E9",
+      "nome": "Cristiano",
+      "lat": -20.002072,
+      "lng": -44.0147418,
+      "endereco": "R. Sidney Antônio de Oliveira, 405 - Brasil Industrial, Belo Horizonte - MG, 30626-200",
+      "disponivel": false,
+      "preferencias": []
+    },
+    {
+      "id": "E10",
+      "nome": "Edilene",
+      "lat": -19.8700087,
+      "lng": -43.9494833,
+      "endereco": "R. Boaventura, 85 - Indaiá, Belo Horizonte - MG, 31270-020",
+      "disponivel": false,
+      "preferencias": []
+    },
+    {
+      "id": "E11",
+      "nome": "Emerson",
+      "lat": -19.9398004,
+      "lng": -43.9817874,
+      "endereco": "R. Ferreira Viana, 65 - Salgado Filho, Belo Horizonte - MG, 30550-140",
+      "disponivel": false,
+      "preferencias": []
+    },
+    {
+      "id": "E12",
+      "nome": "Alex",
+      "lat": -19.9398004,
+      "lng": -43.9817874,
+      "endereco": "R. Ferreira Viana, 65 - Salgado Filho, Belo Horizonte - MG, 30550-140",
+      "disponivel": false,
+      "preferencias": []
+    },
+    {
+      "id": "E13",
+      "nome": "Daniel",
+      "lat": -19.9398004,
+      "lng": -43.9817874,
+      "endereco": "R. Ferreira Viana, 65 - Salgado Filho, Belo Horizonte - MG, 30550-140",
+      "disponivel": false,
+      "preferencias": []
+    },
+    {
+      "id": "E25",
+      "nome": "Lalamove",
+      "lat": -19.9398004,
+      "lng": -43.9817874,
+      "endereco": "Rua Ferreira Viana 65, Salgado Filho Belo Horizonte",
+      "disponivel": false,
+      "preferencias": []
+    },
+    {
+      "id": "E26",
+      "nome": "Lala 1",
+      "lat": -19.9398004,
+      "lng": -43.9817874,
+      "endereco": "Rua Ferreira Viana 65, Salgado Filho Belo Horizonte",
+      "disponivel": false,
+      "preferencias": []
+    },
+    {
+      "id": "E27",
+      "nome": "Lala 2",
+      "lat": -19.9398004,
+      "lng": -43.9817874,
+      "endereco": "Rua Ferreira Viana 65, Salgado Filho Belo Horizonte",
+      "disponivel": false,
+      "preferencias": []
+    },
+    {
+      "id": "E28",
+      "nome": "Lala 3",
+      "lat": -19.9398004,
+      "lng": -43.9817874,
+      "endereco": "Rua Ferreira Viana 65, Salgado Filho Belo Horizonte",
+      "disponivel": false,
+      "preferencias": []
+    },
+    {
+      "id": "E29",
+      "nome": "Lala 4",
+      "lat": -19.9398004,
+      "lng": -43.9817874,
+      "endereco": "Rua Ferreira Viana 65, Salgado Filho Belo Horizonte",
+      "disponivel": false,
+      "preferencias": []
+    },
+    {
+      "id": "E30",
+      "nome": "Lala 5",
+      "lat": -19.9398004,
+      "lng": -43.9817874,
+      "endereco": "Rua Ferreira Viana 65, Salgado Filho Belo Horizonte",
+      "disponivel": false,
+      "preferencias": []
+    },
+    {
+      "id": "E31",
+      "nome": "Lala 6",
+      "lat": -19.9398004,
+      "lng": -43.9817874,
+      "endereco": "Rua Ferreira Viana 65, Salgado Filho Belo Horizonte",
+      "disponivel": false,
+      "preferencias": []
+    },
+    {
+      "id": "E32",
+      "nome": "Lala 7",
+      "lat": -19.9398004,
+      "lng": -43.9817874,
+      "endereco": "Rua Ferreira Viana 65, Salgado Filho Belo Horizonte",
+      "disponivel": false,
+      "preferencias": []
+    },
+    {
+      "id": "E33",
+      "nome": "Lala 8",
+      "lat": -19.9398004,
+      "lng": -43.9817874,
+      "endereco": "Rua Ferreira Viana 65, Salgado Filho Belo Horizonte",
+      "disponivel": false,
+      "preferencias": []
+    }
+  ],
+  "_sheet_url": "https://docs.google.com/spreadsheets/d/1jimD9A8_H7RwewrwNbMGtnG8mJjuwvn7LsDVa2THnEI/edit?gid=1137683525"
 }

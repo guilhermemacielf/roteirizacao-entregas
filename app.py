@@ -27,6 +27,8 @@ from motor.geocode import (GeocodeError, carregar_cache, salvar_cache,
                             _normalizar, geocodificar)
 from motor.obs import extrair_janela
 from motor.sheets_write import escrever_rotas, SheetsWriteError
+from motor.entregadores_sheet import sincronizar_entregadores, carregar_valores
+from motor.valores import calcular_valor_todas
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -272,7 +274,40 @@ def api_rotear():
 
     resultado = rotas_para_dict(rotas, cd)
     resultado["n_entregas_entrada"] = len(entregas)
+
+    # Se tem tabela de valores cadastrada (sincronizada da planilha de
+    # entregadores), calcula valor pago por rota com memória de cálculo.
+    valores = carregar_valores()
+    if valores:
+        calcular_valor_todas(resultado["rotas"], valores)
+        resultado["valores"] = valores
+        resultado["pagamento_total"] = round(sum(
+            r["pagamento"]["valor_total"] for r in resultado["rotas"]
+            if r.get("pagamento")
+        ), 2)
+
     return jsonify(resultado)
+
+
+@app.route("/api/entregadores/sincronizar", methods=["POST"])
+def api_entregadores_sincronizar():
+    """Baixa a planilha de cadastro de entregadores + valores, geocodifica
+    e sobrescreve dados/config.json + dados/valores.json. Body: {url}.
+
+    Resposta: {n_entregadores, falhas[], valor_km, valor_padrao, n_valores_bairro}.
+    """
+    d = request.get_json(silent=True) or {}
+    url = (d.get("url") or "").strip()
+    if not url:
+        return jsonify({"erro": "informe a URL da planilha"}), 400
+    try:
+        r = sincronizar_entregadores(url)
+    except ValueError as e:
+        return jsonify({"erro": str(e)}), 400
+    except Exception as e:
+        log.exception("erro no sincronizar_entregadores")
+        return jsonify({"erro": f"erro inesperado: {e}"}), 500
+    return jsonify(r)
 
 
 @app.route("/api/sheets/escrever", methods=["POST"])

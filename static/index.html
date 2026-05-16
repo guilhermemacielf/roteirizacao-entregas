@@ -130,6 +130,10 @@
     <div class="secao">
       <div class="secao-tit">2 · CD &amp; Entregadores</div>
       <div class="info" id="info-cd" style="margin-bottom:8px">Carregando config…</div>
+      <div class="url-row">
+        <input type="text" id="sheet-entregadores-url" placeholder="URL da planilha de entregadores (col E/F/J/K/L + valores A/B)"/>
+        <button class="btn btn-sm btn-azul" id="btn-sync-ent" onclick="sincronizarEntregadores()">🔄 Sincronizar</button>
+      </div>
       <div id="lista-entregadores"></div>
     </div>
 
@@ -206,6 +210,33 @@ async function carregarConfig() {
   } catch (e) {
     document.getElementById('info-cd').innerHTML =
       `<span style="color:var(--vermelho)">Erro: ${e.message}</span>`;
+  }
+  // Restaura URL salva da planilha de entregadores
+  const urlEntSalva = localStorage.getItem('sheetEntregadoresUrl');
+  if (urlEntSalva) document.getElementById('sheet-entregadores-url').value = urlEntSalva;
+}
+
+async function sincronizarEntregadores() {
+  const url = document.getElementById('sheet-entregadores-url').value.trim();
+  if (!url) return toast('Cole a URL da planilha de entregadores');
+  const btn = document.getElementById('btn-sync-ent');
+  btn.disabled = true; btn.textContent = '⏳ Sincronizando…';
+  try {
+    const r = await fetch('/api/entregadores/sincronizar', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.erro || 'falha na sincronização');
+    localStorage.setItem('sheetEntregadoresUrl', url);
+    let msg = `✓ ${d.n_entregadores} entregadores sincronizados`;
+    if (d.falhas && d.falhas.length) msg += ` (${d.falhas.length} endereços não geocodificados)`;
+    toast(msg);
+    await carregarConfig();  // re-renderiza lista com nomes/preferências novos
+  } catch (e) {
+    toast('Erro: ' + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = '🔄 Sincronizar';
   }
 }
 
@@ -711,6 +742,12 @@ function renderResultado() {
     <span style="font-size:12px;color:var(--muted)">${d.rotas.length} rota(s)</span>
     <button class="btn btn-sm" onclick="verTodas()">Ver todas no mapa</button>
   </div>`;
+  // Resumo geral: pagamento total quando há tabela de valores
+  if (d.pagamento_total != null) {
+    html = `<div class="resumo" style="background:#dcfce7;border-color:#86efac">
+      <div class="m"><b>R$ ${d.pagamento_total.toFixed(2).replace('.', ',')}</b>pagamento total entregadores</div>
+    </div>` + html;
+  }
   html += d.rotas.map((r, i) => {
     const cor = CORES[i % CORES.length];
     const nomeEnt = r.entregador?.nome || '—';
@@ -718,20 +755,30 @@ function renderResultado() {
       ? `<span class="badge-lala">📱 ${nomeEnt}</span>`
       : nomeEnt;
     const paradas = r.paradas.map(p => {
-      // Mostra nome quando vem (fluxo Sheets); senão cai no id (fluxo CSV "id,lat,lng")
       const titulo = p.nome || p.id;
       const sub = p.nome ? ` <span style="color:var(--hint)">· ${p.id}</span>` : '';
       return `<div class="parada"><span class="o">${p.ordem}.</span>
         <span style="flex:1">${titulo}${sub}${p.obs ? ` <span style="color:var(--hint)">· ${p.obs}</span>` : ''}</span>
         <span>~${hms(p.chegada_estimada_s)}</span></div>`;
     }).join('');
+    // Pagamento (se tem tabela de valores) — linha extra no meta + memória no expand
+    const pag = r.pagamento;
+    const metaPag = pag
+      ? `<br><b style="color:#15803d">R$ ${pag.valor_total.toFixed(2).replace('.', ',')}</b>`
+      : '';
+    const memoria = pag
+      ? `<div style="margin-top:6px;padding-top:6px;border-top:1px dashed var(--border);font-family:var(--mono,monospace);font-size:11px;color:var(--muted)">
+           <b style="color:var(--text)">memória:</b><br>
+           ${pag.memoria.map(l => l.startsWith('TOTAL') ? `<b style="color:#15803d">${l}</b>` : l).join('<br>')}
+         </div>`
+      : '';
     return `<div class="rota-card" id="rcard-${i}" onclick="toggleRota(${i})">
       <div class="rota-head">
         <div class="barra" style="background:${cor}"></div>
         <div class="nome">${quem}</div>
-        <div class="meta">${r.n_paradas} entregas<br>${r.distancia_km} km · ${hms(r.duracao_s)}</div>
+        <div class="meta">${r.n_paradas} entregas<br>${r.distancia_km} km · ${hms(r.duracao_s)}${metaPag}</div>
       </div>
-      <div class="rota-paradas">${paradas || '<i>sem paradas</i>'}</div>
+      <div class="rota-paradas">${paradas || '<i>sem paradas</i>'}${memoria}</div>
     </div>`;
   }).join('');
   document.getElementById('resultado').innerHTML = html;
