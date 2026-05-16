@@ -160,17 +160,27 @@ def _construir_e_resolver(
         cnt_idx, 0, [max_paradas] * m, True, "Contagem",
     )
     cnt_dim = routing.GetDimensionOrDie("Contagem")
-    # Penaliza fortemente desbalanceamento. 5M por unidade de span força
-    # 10/10/10 em vez de 18/3/9 — necessário pra evitar que entregadores
-    # com casa perto do CD (caso Leia) fiquem com poucas paradas. Combinado
-    # com Disjunction penalty=1B (no fallback), o solver não cai na armadilha
-    # de "dropar tudo pra ter span zero" — incluir sai muito mais barato.
-    cnt_dim.SetGlobalSpanCostCoefficient(5_000_000)
+    # GlobalSpanCost na contagem como hint (mais barato que hard constraint
+    # de span e ainda preserva diversidade de busca).
+    cnt_dim.SetGlobalSpanCostCoefficient(500_000)
 
     if forcar_todos_saem:
+        # Restrição dura de balanceamento. Cada veículo fica entre
+        # [média-2, média_alta+3] paradas — span máximo de 5, suficiente
+        # pra absorver entregas mais "caras" (rota longa) sem deixar
+        # entregador com 1 parada enquanto outro tem 18.
+        # Exemplo: n=80, m=8 → média=10 → cada entre 8 e 13 paradas.
+        # Exemplo: n=36, m=13 → média 2-3 → cada entre 1 e 6.
+        # Se infactível (cenário extremo), o fallback remove a restrição.
+        media_baixa = n // m
+        media_alta = -(-n // m)
+        lo = max(1, media_baixa - 2)
+        hi = min(max_paradas, media_alta + 3)
         solver = routing.solver()
         for v in range(m):
-            solver.Add(cnt_dim.CumulVar(routing.End(v)) >= 1)
+            cv = cnt_dim.CumulVar(routing.End(v))
+            solver.Add(cv >= lo)
+            solver.Add(cv <= hi)
 
     routing.SetFixedCostOfAllVehicles(0)
 
@@ -205,11 +215,11 @@ def _construir_e_resolver(
     params.first_solution_strategy = (
         routing_enums_pb2.FirstSolutionStrategy.AUTOMATIC
     )
-    # SIMULATED_ANNEALING escapa melhor de ótimos locais do que GUIDED_LOCAL_SEARCH
-    # — importante quando entregadores com casa perto do CD ficam presos com
-    # poucas paradas (rota longa pra eles "custa" muito a perna final).
+    # GUIDED_LOCAL_SEARCH é mais conservador (não escapa tanto de ótimos locais
+    # quanto SIMULATED_ANNEALING, mas é mais robusto pra encontrar solução
+    # factível inicial com restrições estritas de balanceamento).
     params.local_search_metaheuristic = (
-        routing_enums_pb2.LocalSearchMetaheuristic.SIMULATED_ANNEALING
+        routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
     )
     params.time_limit.FromSeconds(tempo_limite_s)
 

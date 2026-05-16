@@ -614,7 +614,8 @@ function toggleRota(i) {
 }
 
 // ── Mapa: rotas ───────────────────────────────────────────
-function desenharRotas() {
+function desenharRotas(filtroIdx = null) {
+  // filtroIdx=null → desenha todas; filtroIdx=i → só a rota i (CD + paradas + casa).
   camadaEntrada.clearLayers();
   camadaRotas.clearLayers();
   const d = S.resultado;
@@ -623,10 +624,9 @@ function desenharRotas() {
   todos.push([d.cd.lat, d.cd.lng]);
 
   d.rotas.forEach((r, i) => {
+    if (filtroIdx !== null && filtroIdx !== i) return;
     const cor = CORES[i % CORES.length];
-    const pts = [[d.cd.lat, d.cd.lng]];
     r.paradas.forEach(p => {
-      pts.push([p.lat, p.lng]);
       todos.push([p.lat, p.lng]);
       L.marker([p.lat, p.lng], {
         icon: L.divIcon({ className: '',
@@ -639,10 +639,7 @@ function desenharRotas() {
         `<br>chega ~${hms(p.chegada_estimada_s)}${p.obs ? '<br><i>' + p.obs + '</i>' : ''}`)
         .addTo(camadaRotas);
     });
-    // Marker de "casa" só pros entregadores reais. Lalamove tem entregador
-    // virtual com lat/lng = CD (não desenha 🏠 em cima do CD).
     if (r.entregador && !r.candidata_lalamove) {
-      pts.push([r.entregador.lat, r.entregador.lng]);
       todos.push([r.entregador.lat, r.entregador.lng]);
       L.marker([r.entregador.lat, r.entregador.lng], {
         icon: L.divIcon({ className: '',
@@ -650,22 +647,25 @@ function desenharRotas() {
           iconSize: [24, 24], iconAnchor: [12, 12] })
       }).bindPopup(`<b>🏠 ${r.entregador.nome}</b><br>fim da rota`).addTo(camadaRotas);
     }
-    L.polyline(pts, { color: cor, weight: 3, opacity: .85 })
+    // Polyline: usa a geometria REAL (ruas) vinda do OSRM se disponível,
+    // senão cai pra linha reta entre pontos.
+    const linha = (r.geometry && r.geometry.length > 1)
+      ? r.geometry
+      : [[d.cd.lat, d.cd.lng],
+         ...r.paradas.map(p => [p.lat, p.lng]),
+         ...(r.entregador && !r.candidata_lalamove ? [[r.entregador.lat, r.entregador.lng]] : [])];
+    L.polyline(linha, { color: cor, weight: 4, opacity: .85 })
       .addTo(camadaRotas);
   });
   if (todos.length > 1) map.fitBounds(todos, { padding: [40, 40] });
 }
 
 function focarRota(i) {
-  const d = S.resultado;
-  if (!d) return;
+  if (!S.resultado) return;
   S.rotaFoco = i;
   document.querySelectorAll('.rota-card').forEach((c, k) =>
     c.classList.toggle('foco', k === i));
-  const r = d.rotas[i];
-  const pts = [[d.cd.lat, d.cd.lng], ...r.paradas.map(p => [p.lat, p.lng])];
-  if (r.entregador && !r.candidata_lalamove) pts.push([r.entregador.lat, r.entregador.lng]);
-  if (pts.length > 1) map.fitBounds(pts, { padding: [60, 60] });
+  desenharRotas(i);  // redesenha mostrando só a rota i
 }
 
 function verTodas() {

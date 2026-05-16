@@ -94,6 +94,37 @@ def matriz(coords: list[tuple[float, float]], perfil: str = "driving") -> dict:
     }
 
 
+def rota_geometria(coords: list[tuple[float, float]],
+                   perfil: str = "driving") -> list[tuple[float, float]]:
+    """Pega uma sequência ordenada de (lat, lng) e devolve a polyline real
+    da rota completa (CD → p1 → p2 → ... → casa) seguindo as ruas via OSRM.
+
+    Retorna lista de (lat, lng) interpolados — bem mais densa que a entrada,
+    representando a geometria real das ruas. Pra desenhar no mapa Leaflet,
+    o front passa direto pra L.polyline.
+
+    Em caso de erro de rede ou OSRM, devolve linha reta (lista original) —
+    o motor continua funcionando, só perde a geometria bonita.
+    """
+    if len(coords) < 2:
+        return list(coords)
+    pares = ";".join(f"{lng},{lat}" for lat, lng in coords)
+    url = f"{OSRM_URL}/route/v1/{perfil}/{pares}"
+    params = {"overview": "full", "geometries": "geojson", "steps": "false"}
+    try:
+        r = requests.get(url, params=params, timeout=30)
+        r.raise_for_status()
+        data = r.json()
+        if data.get("code") != "Ok":
+            raise MatrizError(f"OSRM /route code={data.get('code')}")
+        # GeoJSON LineString: coordinates é [[lng, lat], ...]
+        coords_geojson = data["routes"][0]["geometry"]["coordinates"]
+        return [(lat, lng) for lng, lat in coords_geojson]
+    except (requests.RequestException, MatrizError, KeyError, IndexError) as e:
+        log.warning("falha em rota_geometria, fallback pra linha reta: %s", e)
+        return list(coords)
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     # Smoke check — 3 pontos em BH
@@ -106,3 +137,5 @@ if __name__ == "__main__":
     print(f"Matriz {res['n']}x{res['n']} OK")
     for linha in res["distancia"]:
         print("  ", [f"{m/1000:.1f}km" for m in linha])
+    geo = rota_geometria(pontos)
+    print(f"Geometria: {len(geo)} pontos interpolados")

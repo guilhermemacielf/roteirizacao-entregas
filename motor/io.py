@@ -25,6 +25,7 @@ import requests
 from motor.modelos import Entrega, Entregador, CD, Rota
 from motor.geocode import geocodificar_lista
 from motor.obs import extrair_janela
+from motor.matriz import rota_geometria
 
 log = logging.getLogger(__name__)
 
@@ -292,11 +293,25 @@ def imprimir_rotas(rotas: list[Rota]) -> None:
 
 def rotas_para_dict(rotas: list[Rota], cd: CD) -> dict:
     """Serializa as rotas + CD num dict JSON-friendly pra a API/UI web.
-    Inclui coordenadas de tudo (CD, casa do entregador, cada parada) pra
-    o front desenhar no mapa, e um resumo agregado."""
+    Inclui coordenadas + geometria real (polyline OSRM) pra o front desenhar
+    rotas seguindo as ruas reais. Pra Lalamove (entregador virtual), geometria
+    é linha reta (Lalamove não passa pelo OSRM).
+    """
     rotas_json = []
     for r in rotas:
         ent = r.entregador
+
+        # Geometria da polyline: pra entregador real, pega do OSRM a rota
+        # CD → paradas → casa do entregador. Pra Lalamove, usa só os pontos
+        # (linha reta entre eles, já que distância Lalamove é haversine).
+        if r.candidata_lalamove or ent is None:
+            geom = [(cd.lat, cd.lng)] + [(p.entrega.lat, p.entrega.lng) for p in r.paradas]
+        else:
+            seq = ([(cd.lat, cd.lng)]
+                   + [(p.entrega.lat, p.entrega.lng) for p in r.paradas]
+                   + [(ent.lat, ent.lng)])
+            geom = rota_geometria(seq)
+
         rotas_json.append({
             "entregador": None if ent is None else {
                 "id": ent.id, "nome": ent.nome, "lat": ent.lat, "lng": ent.lng,
@@ -305,6 +320,7 @@ def rotas_para_dict(rotas: list[Rota], cd: CD) -> dict:
             "n_paradas":     r.n_paradas,
             "distancia_km":  round(r.distancia_m / 1000, 2),
             "duracao_s":     int(r.duracao_s),
+            "geometry":      [[lat, lng] for lat, lng in geom],
             "paradas": [
                 {
                     "ordem":              p.ordem,
