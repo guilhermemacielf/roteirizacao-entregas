@@ -234,23 +234,146 @@ def _consultar_photon(endereco: str) -> tuple[float, float] | None:
         return None
 
 
+def _consultar_brasilapi_cep(cep: str) -> tuple[float, float] | None:
+    """Fallback automático pelo CEP: BrasilAPI v2 retorna coordenadas do
+    centroide do CEP quando disponível. Precisão típica: ~50m (faixa do
+    CEP), boa o suficiente pro CVRP. Sem rate limit / sem cadastro.
+    Retorna None se o CEP não existir ou se a v2 não tiver coordenadas
+    (algumas faixas de CEP ainda não foram mapeadas)."""
+    cep_num = re.sub(r"\D", "", cep or "")
+    if len(cep_num) != 8:
+        return None
+    try:
+        r = requests.get(
+            f"https://brasilapi.com.br/api/cep/v2/{cep_num}",
+            headers={"User-Agent": USER_AGENT},
+            timeout=15,
+        )
+        if r.status_code == 404:
+            return None
+        r.raise_for_status()
+        data = r.json()
+    except requests.RequestException as e:
+        log.warning("brasilapi cep %s falhou: %s", cep_num, e)
+        return None
+    try:
+        loc = (data or {}).get("location", {}).get("coordinates", {})
+        lat = loc.get("latitude")
+        lng = loc.get("longitude")
+        if lat is None or lng is None or lat == "" or lng == "":
+            return None
+        return float(lat), float(lng)
+    except (KeyError, ValueError, TypeError):
+        return None
+
+
+def _consultar_centroide_bairro(bairro: str, cidade: str) -> tuple[float, float] | None:
+    """Último recurso automático: pega o centroide do BAIRRO pelo Nominatim
+    ("Belvedere, Belo Horizonte, MG, Brasil"). Erro típico: 300-800m, mas
+    o entregador conhece o bairro e a casa fica perto disso. Pro CVRP de
+    120 paradas em escala de cidade, esse erro é tolerável (melhor que
+    deixar a entrega de fora)."""
+    if not bairro:
+        return None
+    q = f"{bairro}, {cidade or 'Belo Horizonte'}, MG, Brasil"
+    return _consultar_nominatim(q)
+
+
+def _extrair_cep(endereco: str) -> str | None:
+    m = re.search(r"\b(\d{5})-?(\d{3})\b", endereco or "")
+    return f"{m.group(1)}-{m.group(2)}" if m else None
+
+
+def _extrair_bairro_cidade(endereco: str) -> tuple[str | None, str]:
+    """Pega o bairro (token entre número e CEP/cidade) e a cidade do
+    endereço bruto. Heurística simples — usada só pro fallback do
+    centroide do bairro quando tudo mais falhou."""
+    s = _expandir_abrev(endereco or "").strip()
+    s = _CD_REF_RE.sub(" ", s)
+    s = _COMPLEMENTO_RE.sub(" ", s)
+    s = _REFERENCIA_RE.sub(" ", s)
+
+    # Cidade no fim
+    cidade = "Belo Horizonte"
+    for c in CIDADES:
+        if re.search(r"\b" + re.escape(c) + r"\b\s*$", s, flags=re.IGNORECASE):
+            cidade = c
+            s = re.sub(r"\b" + re.escape(c) + r"\b\s*$", "", s, flags=re.IGNORECASE)
+            break
+    # Remove CEP
+    cep_m = re.search(r"\b\d{5}-?\d{3}\b", s)
+    if cep_m:
+        s = s[:cep_m.start()] + " " + s[cep_m.end():]
+    # O bairro é o que sobra depois do último número (rua/casa)
+    nucleo = re.sub(r"\s+", " ", s).strip(" ,;")
+    m = re.search(r".*\b\d{1,5}[A-Za-z]?\s+(.+)$", nucleo)
+    bairro = m.group(1).strip(" ,;") if m else None
+    if bairro and re.search(r"\d", bairro):
+        bairro = None   # ainda tem número, não é bairro puro
+    return bairro, cidade
+
+
 def _consultar_em_cascata(endereco: str) -> tuple[float, float] | None:
-    """Tenta as variações do endereço, primeiro no Nominatim. Se TODAS
-    as variações falharem no Nominatim, tenta a v1 no Photon. Respeita
-    pausa entre consultas pra ser amigável com os servidores públicos."""
+    """Tenta o endereço em vários provedores até achar uma coordenada.
+
+    Ordem:
+      1. Nominatim com variações limpas (v1, v2, v3) — preciso quando funciona
+      2. Photon (Komoot) — parser mais tolerante pra queries bagunçadas
+      3. BrasilAPI v2 pelo CEP — centroide do CEP (~50m de erro)
+      4. Nominatim por bairro + cidade — centroide do bairro (~500m de erro,
+         último recurso pra entrega não ficar de fora)
+
+    A precisão cai conforme avança nos fallbacks. O CVRP em escala de
+    cidade tolera erros de até ~500m sem mudança prática nas rotas.
+    Pausa entre consultas pra ser amigável com os servidores públicos."""
     variacoes = _gerar_variacoes(endereco)
     if not variacoes:
         return None
+
+    # 1. Nominatim com variações
     for i, v in enumerate(variacoes):
         coord = _consultar_nominatim(v)
-        if i < len(variacoes) - 1 or coord is None:
-            time.sleep(PAUSA_S)
+        time.sleep(PAUSA_S)
         if coord is not None:
             return coord
-    # Último recurso: Photon com a primeira variação (limpa).
+
+    # 2. Photon
     coord = _consultar_photon(variacoes[0])
-    time.sleep(PAUSA_S)
-    return coord
+    if coord is not None:
+        log.info("geocode via Photon: %s", endereco)
+        return coord
+    time.sleep(PAUSA_S / 2)
+
+    # 3. BrasilAPI v2 pelo CEP (centroide ~50m)
+    cep = _extrair_cep(endereco)
+    if cep:
+        coord = _consultar_brasilapi_cep(cep)
+        if coord is not None:
+            log.info("geocode aproximado via CEP (BrasilAPI): %s", endereco)
+            return coord
+
+    # 4. Centroide do bairro (~500m)
+    bairro, cidade = _extrair_bairro_cidade(endereco)
+    if bairro:
+        coord = _consultar_centroide_bairro(bairro, cidade)
+        time.sleep(PAUSA_S)
+        if coord is not None:
+            log.warning("geocode APROXIMADO pelo bairro %s/%s: %s",
+                        bairro, cidade, endereco)
+            return coord
+
+    # 5. Centroide da cidade (~1-2km) — último recurso. Pega TUDO que
+    # tem cidade conhecida e evita ficar de fora da rota. Erro maior:
+    # o entregador pode precisar conferir o endereço na mão depois.
+    if cidade:
+        coord = _consultar_nominatim(f"{cidade}, MG, Brasil")
+        time.sleep(PAUSA_S)
+        if coord is not None:
+            log.warning("geocode MUITO APROXIMADO pela cidade %s (verificar!): %s",
+                        cidade, endereco)
+            return coord
+
+    return None
 
 
 # ── API pública ─────────────────────────────────────────────
