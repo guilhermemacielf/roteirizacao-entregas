@@ -47,11 +47,23 @@ def calcular_valor_rota(rota: dict, valores: dict) -> dict:
     # Agrupa contagem por valor (ex: 5x padrão, 1x Contagem)
     contagem_por_chave: dict[tuple[float, str], int] = {}
     for parada in rota.get("paradas") or []:
+        cidade_norm = _norm(parada.get("cidade") or "")
         bairro_norm = _norm(parada.get("bairro") or "")
 
-        # Lookup: primeiro o bairro inteiro como veio (pode ser cidade ou bairro).
-        v = por_bairro.get(bairro_norm)
-        rotulo = parada.get("bairro") or "—"
+        # Lookup priorizado: cidade (se ≠ BH) → bairro → padrão.
+        # Cidades como Contagem/Vespasiano/Sabará têm tarifa fixa pela
+        # cidade inteira. Pra BH, valor depende do bairro (Ipê, Ouro Velho)
+        # ou cai no padrão R$7,20 (BH e Vila da Serra).
+        v = None
+        rotulo = None
+        if cidade_norm and cidade_norm != "belo horizonte":
+            v = por_bairro.get(cidade_norm)
+            if v is not None:
+                rotulo = parada.get("cidade") or cidade_norm
+        if v is None and bairro_norm:
+            v = por_bairro.get(bairro_norm)
+            if v is not None:
+                rotulo = parada.get("bairro") or bairro_norm
         if v is None:
             v = valor_padrao
             rotulo = "padrão BH/Vila da Serra"
