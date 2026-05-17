@@ -32,7 +32,6 @@ e é O(m² log m). Pra escalas maiores, trocar por Hungarian (scipy).
 """
 
 import math
-import random
 from collections import Counter
 
 
@@ -53,48 +52,88 @@ def _dist2(a_lat, a_lng, b_lat, b_lng):
     return (a_lat - b_lat) ** 2 + (a_lng - b_lng) ** 2
 
 
-def _seed_kmeanspp(entregas, m, rng):
-    """k-means++ seed: 1º centróide aleatório, próximos escolhidos com
-    probabilidade proporcional a d²(ponto, centróide_mais_próximo).
-    Reduz drasticamente chance de cair em ótimo local ruim."""
+def _diff_angular(a_lat, a_lng, b_lat, b_lng, ref_lat, ref_lng):
+    """Diferença angular (radianos) entre 2 pontos vistos do ponto de
+    referência. Retorna em [0, π]."""
+    ang_a = math.atan2(a_lat - ref_lat, a_lng - ref_lng)
+    ang_b = math.atan2(b_lat - ref_lat, b_lng - ref_lng)
+    diff = ((ang_a - ang_b + math.pi) % (2 * math.pi)) - math.pi
+    return abs(diff)
+
+
+def _custo_atribuicao(e_lat, e_lng, c_lat, c_lng, cd_lat, cd_lng, peso_ang):
+    """Custo pra atribuir entrega a centróide:
+      dist²(entrega, centróide) + peso_ang × diff_angular(entrega, centróide vistos do CD)²
+
+    Sem penalty (peso_ang=0), vira K-means clássico. Com peso_ang > 0,
+    entregas em direções diferentes do centróide (a partir do CD) pagam
+    custo extra — evita o problema de cluster perto do CD virar uma
+    'estrela' que pega pontos em direções opostas."""
+    d2 = _dist2(e_lat, e_lng, c_lat, c_lng)
+    if peso_ang <= 0:
+        return d2
+    diff = _diff_angular(e_lat, e_lng, c_lat, c_lng, cd_lat, cd_lng)
+    return d2 + peso_ang * diff * diff
+
+
+def _seed_setorial(entregas, cd, m):
+    """Inicializa m centróides em DIREÇÕES diferentes a partir do CD.
+
+    Divide o espaço angular ao redor do CD em m setores iguais (cada um
+    de 360°/m). Pra cada setor, pega a entrega MAIS DISTANTE do CD nesse
+    setor como seed. Setores vazios usam um ponto sintético na direção
+    média do setor (raio = média das distâncias do CD).
+
+    Vantagem sobre k-means++: garante diversidade angular dos clusters,
+    evita o problema "centróide cai no meio de várias direções e cluster
+    fica espalhado pegando extremos opostos da cidade".
+    """
     n = len(entregas)
     if n == 0 or m == 0:
         return []
-    seeds = [(entregas[rng.randrange(n)].lat, entregas[rng.randrange(n)].lng)]
-    while len(seeds) < m:
-        # Pra cada ponto, distância² ao seed mais próximo já escolhido
-        d2 = [
-            min(_dist2(e.lat, e.lng, s[0], s[1]) for s in seeds)
-            for e in entregas
-        ]
-        total = sum(d2)
-        if total <= 0:
-            # Todos os pontos estão exatamente em seeds — escolhe aleatório
-            i = rng.randrange(n)
+    if n <= m:
+        # Cada entrega vira seed (e setores extras ficam vazios — tratados
+        # pelo caller)
+        return [(e.lat, e.lng) for e in entregas]
+
+    # Ângulo + distância² de cada entrega ao CD
+    pts = []
+    for i, e in enumerate(entregas):
+        ang = math.atan2(e.lat - cd.lat, e.lng - cd.lng)  # [-π, π]
+        d2 = _dist2(e.lat, e.lng, cd.lat, cd.lng)
+        pts.append((ang, d2, i))
+
+    setor = 2 * math.pi / m
+    seeds = []
+    dist_media = (sum(p[1] for p in pts) / n) ** 0.5  # pra setores vazios
+    for k in range(m):
+        ang_min = -math.pi + k * setor
+        ang_max = -math.pi + (k + 1) * setor
+        no_setor = [(d2, i) for ang, d2, i in pts if ang_min <= ang < ang_max]
+        if no_setor:
+            _, i_mais_dist = max(no_setor, key=lambda t: t[0])
+            seeds.append((entregas[i_mais_dist].lat, entregas[i_mais_dist].lng))
         else:
-            # Roleta proporcional a d²
-            alvo = rng.random() * total
-            acc = 0
-            i = n - 1
-            for k, v in enumerate(d2):
-                acc += v
-                if acc >= alvo:
-                    i = k
-                    break
-        seeds.append((entregas[i].lat, entregas[i].lng))
+            # Setor vazio: ponto sintético na direção média
+            ang_meio = (ang_min + ang_max) / 2
+            seeds.append((
+                cd.lat + dist_media * math.sin(ang_meio),
+                cd.lng + dist_media * math.cos(ang_meio),
+            ))
     return seeds
 
 
 def kmeans_balanced(entregas, cd, m: int, *,
-                     max_iter: int = 30, seed: int = 42) -> list[list]:
-    """K-means com restrição de capacidade por cluster.
+                     max_iter: int = 30,
+                     peso_angular: float = 0.1) -> list[list]:
+    """K-means com tamanho-alvo fixo + init setorial + penalty angular.
 
     Args:
       entregas: lista de Entrega.
-      cd: CD (usado só como tie-breaker em casos degenerados).
+      cd: CD (referência pra init setorial e penalty angular).
       m: número de clusters.
-      max_iter: máximo de iterações (converge antes na maioria dos casos).
-      seed: semente do RNG pra reprodutibilidade.
+      max_iter: máximo de iterações.
+      peso_angular: peso da diferença angular ao CD no custo de atribuição.
 
     Returns:
       Lista de m listas de Entrega, cada uma com floor(n/m) ou ceil(n/m).
@@ -103,29 +142,20 @@ def kmeans_balanced(entregas, cd, m: int, *,
     if n == 0 or m <= 0:
         return [[] for _ in range(m)]
     if m >= n:
-        # Cada entrega vira seu próprio cluster (clusters extras vazios).
         return [[e] for e in entregas] + [[] for _ in range(m - n)]
 
-    # Tamanhos-alvo FIXOS: garante span máx 1 entre clusters.
-    # Ex: n=107, m=8 → base=13, resto=3 → tamanhos=[14,14,14,13,13,13,13,13].
     base = n // m
     resto = n % m
     tamanhos = [base + (1 if i < resto else 0) for i in range(m)]
 
-    rng = random.Random(seed)
-
-    # Inicialização k-means++
-    centroides = _seed_kmeanspp(entregas, m, rng)
+    centroides = _seed_setorial(entregas, cd, m)
 
     atribuicao_prev = None
     for _iter in range(max_iter):
-        # Atribuição com tamanho-alvo: ordena (ponto, centróide) por d²
-        # crescente, atribui respeitando tamanhos[j] EXATO por cluster.
-        # Garante que todo cluster atinge seu tamanho-alvo (não fica
-        # subutilizado como aconteceria só com cap máximo).
         candidatos = sorted(
             (
-                (_dist2(e.lat, e.lng, c[0], c[1]), i, j)
+                (_custo_atribuicao(e.lat, e.lng, c[0], c[1],
+                                    cd.lat, cd.lng, peso_angular), i, j)
                 for i, e in enumerate(entregas)
                 for j, c in enumerate(centroides)
             ),
@@ -143,13 +173,10 @@ def kmeans_balanced(entregas, cd, m: int, *,
             if n_atrib == n:
                 break
 
-        # Convergência: atribuição idêntica à iteração anterior
         if atribuicao == atribuicao_prev:
             break
         atribuicao_prev = atribuicao
 
-        # Recalcula centróides (média dos pontos do cluster).
-        # Cluster vazio → mantém centróide anterior (não acontece com cap≥1).
         novos = []
         for j in range(m):
             pts = [entregas[i] for i in range(n) if atribuicao[i] == j]
