@@ -139,9 +139,9 @@ def _diametro_km(cluster, cd):
 
 
 def _rebalancear_por_km(clusters, cd,
-                        fator_acima_media: float = 1.4,
+                        fator_acima_media: float = 1.2,
                         span_paradas_max: int = 6,
-                        max_movimentos: int = 30):
+                        max_movimentos: int = 60):
     """Pós-processamento: rota MUITO mais longa em km que a média perde
     suas paradas mais externas (mais distantes do centróide) pra rotas
     com menos km que aceitem (mais próximas da casa daquela parada).

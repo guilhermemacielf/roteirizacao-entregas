@@ -341,6 +341,7 @@ def api_rotear_mover():
 
     afetadas: set[int] = set()
     paradas_por_rota: list[list[dict]] = [list(r.get("paradas") or []) for r in rotas_in]
+    n_movidas = 0
     for mov in movimentos:
         eid = str(mov.get("entrega_id") or "")
         try:
@@ -360,6 +361,7 @@ def api_rotear_mover():
         afetadas.add(para)
         # Atualiza mapa pra movimentos subsequentes que mexam nessa entrega
         id_para_origem[eid] = (para, parada)
+        n_movidas += 1
 
     # Re-roteiriza só as afetadas.
     # Pra entregadores normais: TSP local com matriz OSRM.
@@ -529,6 +531,7 @@ def api_rotear_mover():
         resp["valores"] = valores
         resp["pagamento_total"] = pagamento_total
 
+    resp["movimentos_aplicados"] = n_movidas
     return jsonify(resp)
 
 
