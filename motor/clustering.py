@@ -1,19 +1,24 @@
 """
-Clustering geográfico das entregas (algoritmo Sweep adaptativo) +
-atribuição cluster→entregador.
+Clustering geográfico das entregas (K-means equilibrado) + atribuição
+cluster→entregador.
 
-PASSO 1 — sweep_clusters(entregas, cd, m):
-  - Calcula o ângulo de cada entrega em relação ao CD (atan2).
-  - Encontra o MAIOR vazio angular entre entregas consecutivas — é onde
-    começa a varredura (evita cortar bairros densos ao meio).
-  - Varre do ponto de início no sentido anti-horário, agrupando entregas
-    consecutivas até atingir o tamanho-alvo do cluster, então abre o próximo.
-  - Tamanho-alvo: distribui n entregas em m clusters de forma balanceada.
-    Cada cluster fica com floor(n/m) ou ceil(n/m) entregas (span máx 1).
+PASSO 1 — kmeans_balanced(entregas, cd, m):
+  - K-means tradicional COM restrição de capacidade por cluster.
+  - Inicialização k-means++ (centróides bem espalhados na 1ª iteração).
+  - Atribuição capacitada: pra cada iteração, ordena (ponto, centróide)
+    por distância crescente; atribui o ponto ao centróide mais próximo
+    que ainda TENHA VAGA (cap = ceil(n/m)).
+  - Recalcula centróides (média dos pontos do cluster).
+  - Itera até convergir (atribuições estáveis) ou máx iterações.
+  - Garante balanço (cada cluster ≤ ceil(n/m)) E compacidade (clusters
+    naturalmente agrupam aglomerações).
 
-Bairros densos viram fatias angulares pequenas; bairros esparsos viram
-fatias grandes. Garante balanço de carga + coerência geográfica (vizinhos
-angulares estão geograficamente próximos).
+Versão Sweep antiga (sweep_clusters) mantida pra referência/teste.
+
+PASSO 1b — sweep_clusters(entregas, cd, m):
+  - Versão antiga: divisão angular adaptativa.
+  - Problema observado: corta bairros próximos que ficam na borda da fatia.
+  - Mantido pra comparação.
 
 PASSO 2 — atribuir(clusters, entregadores):
   - Pareia cada cluster a um entregador (matching 1-pra-1).
@@ -27,6 +32,7 @@ e é O(m² log m). Pra escalas maiores, trocar por Hungarian (scipy).
 """
 
 import math
+import random
 from collections import Counter
 
 
@@ -39,6 +45,126 @@ def _haversine_km(a_lat, a_lng, b_lat, b_lng):
          + math.cos(math.radians(a_lat)) * math.cos(math.radians(b_lat))
          * math.sin(dlng / 2) ** 2)
     return 2 * R * math.asin(math.sqrt(a))
+
+
+def _dist2(a_lat, a_lng, b_lat, b_lng):
+    """Distância ao quadrado em coords lat/lng. Para clustering em escala
+    urbana, equivalente à euclidiana — basta pra comparar/ordenar."""
+    return (a_lat - b_lat) ** 2 + (a_lng - b_lng) ** 2
+
+
+def _seed_kmeanspp(entregas, m, rng):
+    """k-means++ seed: 1º centróide aleatório, próximos escolhidos com
+    probabilidade proporcional a d²(ponto, centróide_mais_próximo).
+    Reduz drasticamente chance de cair em ótimo local ruim."""
+    n = len(entregas)
+    if n == 0 or m == 0:
+        return []
+    seeds = [(entregas[rng.randrange(n)].lat, entregas[rng.randrange(n)].lng)]
+    while len(seeds) < m:
+        # Pra cada ponto, distância² ao seed mais próximo já escolhido
+        d2 = [
+            min(_dist2(e.lat, e.lng, s[0], s[1]) for s in seeds)
+            for e in entregas
+        ]
+        total = sum(d2)
+        if total <= 0:
+            # Todos os pontos estão exatamente em seeds — escolhe aleatório
+            i = rng.randrange(n)
+        else:
+            # Roleta proporcional a d²
+            alvo = rng.random() * total
+            acc = 0
+            i = n - 1
+            for k, v in enumerate(d2):
+                acc += v
+                if acc >= alvo:
+                    i = k
+                    break
+        seeds.append((entregas[i].lat, entregas[i].lng))
+    return seeds
+
+
+def kmeans_balanced(entregas, cd, m: int, *,
+                     max_iter: int = 30, seed: int = 42) -> list[list]:
+    """K-means com restrição de capacidade por cluster.
+
+    Args:
+      entregas: lista de Entrega.
+      cd: CD (usado só como tie-breaker em casos degenerados).
+      m: número de clusters.
+      max_iter: máximo de iterações (converge antes na maioria dos casos).
+      seed: semente do RNG pra reprodutibilidade.
+
+    Returns:
+      Lista de m listas de Entrega, cada uma com floor(n/m) ou ceil(n/m).
+    """
+    n = len(entregas)
+    if n == 0 or m <= 0:
+        return [[] for _ in range(m)]
+    if m >= n:
+        # Cada entrega vira seu próprio cluster (clusters extras vazios).
+        return [[e] for e in entregas] + [[] for _ in range(m - n)]
+
+    # Tamanhos-alvo FIXOS: garante span máx 1 entre clusters.
+    # Ex: n=107, m=8 → base=13, resto=3 → tamanhos=[14,14,14,13,13,13,13,13].
+    base = n // m
+    resto = n % m
+    tamanhos = [base + (1 if i < resto else 0) for i in range(m)]
+
+    rng = random.Random(seed)
+
+    # Inicialização k-means++
+    centroides = _seed_kmeanspp(entregas, m, rng)
+
+    atribuicao_prev = None
+    for _iter in range(max_iter):
+        # Atribuição com tamanho-alvo: ordena (ponto, centróide) por d²
+        # crescente, atribui respeitando tamanhos[j] EXATO por cluster.
+        # Garante que todo cluster atinge seu tamanho-alvo (não fica
+        # subutilizado como aconteceria só com cap máximo).
+        candidatos = sorted(
+            (
+                (_dist2(e.lat, e.lng, c[0], c[1]), i, j)
+                for i, e in enumerate(entregas)
+                for j, c in enumerate(centroides)
+            ),
+            key=lambda t: t[0],
+        )
+        atribuicao = [-1] * n
+        tamanho = [0] * m
+        n_atrib = 0
+        for _d, i, j in candidatos:
+            if atribuicao[i] != -1 or tamanho[j] >= tamanhos[j]:
+                continue
+            atribuicao[i] = j
+            tamanho[j] += 1
+            n_atrib += 1
+            if n_atrib == n:
+                break
+
+        # Convergência: atribuição idêntica à iteração anterior
+        if atribuicao == atribuicao_prev:
+            break
+        atribuicao_prev = atribuicao
+
+        # Recalcula centróides (média dos pontos do cluster).
+        # Cluster vazio → mantém centróide anterior (não acontece com cap≥1).
+        novos = []
+        for j in range(m):
+            pts = [entregas[i] for i in range(n) if atribuicao[i] == j]
+            if pts:
+                lat = sum(p.lat for p in pts) / len(pts)
+                lng = sum(p.lng for p in pts) / len(pts)
+                novos.append((lat, lng))
+            else:
+                novos.append(centroides[j])
+        centroides = novos
+
+    return [
+        [entregas[i] for i in range(n) if atribuicao[i] == j]
+        for j in range(m)
+    ]
 
 
 def sweep_clusters(entregas, cd, m: int) -> list[list]:

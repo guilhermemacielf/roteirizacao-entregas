@@ -35,7 +35,7 @@ from ortools.constraint_solver import routing_enums_pb2, pywrapcp
 
 from motor.modelos import Entrega, Entregador, CD, Parada, Rota
 from motor.matriz import matriz as osrm_matriz
-from motor.clustering import sweep_clusters, atribuir
+from motor.clustering import kmeans_balanced, atribuir
 
 log = logging.getLogger(__name__)
 
@@ -273,9 +273,10 @@ def roteirizar(
     # Quando há menos entregas que entregadores, usa só n entregadores.
     m_efetivo = min(m, n)
 
-    # PASSO 2: clustering geográfico por sweep.
-    clusters = sweep_clusters(entregas, cd, m_efetivo)
-    log.info("Sweep clustering: %d clusters, tamanhos=%s",
+    # PASSO 2: clustering geográfico via K-means equilibrado (compacto,
+    # balanceado, não corta bairros como o sweep angular fazia).
+    clusters = kmeans_balanced(entregas, cd, m_efetivo)
+    log.info("K-means balanced: %d clusters, tamanhos=%s",
              m_efetivo, [len(c) for c in clusters])
 
     # PASSO 3: atribuição cluster→entregador (greedy com bonus de preferência).
