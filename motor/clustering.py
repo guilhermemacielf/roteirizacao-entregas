@@ -123,20 +123,126 @@ def _seed_setorial(entregas, cd, m):
     return seeds
 
 
+def _diametro_km(cluster, cd):
+    """Estimativa do tamanho geográfico do cluster: maior distância haversine
+    entre 2 paradas do cluster (km). Cluster vazio ou 1 ponto → 0."""
+    if len(cluster) < 2:
+        return 0.0
+    coords = [(e.lat, e.lng) for e in cluster]
+    d_max = 0.0
+    for i in range(len(coords)):
+        for j in range(i + 1, len(coords)):
+            d = _haversine_km(coords[i][0], coords[i][1], coords[j][0], coords[j][1])
+            if d > d_max:
+                d_max = d
+    return d_max
+
+
+def _rebalancear_por_km(clusters, cd,
+                        fator_acima_media: float = 1.4,
+                        span_paradas_max: int = 6,
+                        max_movimentos: int = 30):
+    """Pós-processamento: rota MUITO mais longa em km que a média perde
+    suas paradas mais externas (mais distantes do centróide) pra rotas
+    com menos km que aceitem (mais próximas da casa daquela parada).
+
+    Aceita span maior em paradas (até span_paradas_max) em troca de
+    reduzir km da rota gigante. Estado-objetivo: nenhuma rota com
+    diâmetro > fator_acima_media × média_dos_outros.
+    """
+    if not clusters or len(clusters) < 2:
+        return clusters
+
+    for _ in range(max_movimentos):
+        diams = [_diametro_km(c, cd) for c in clusters]
+        # Cluster vazio ou 1 ponto não conta na média
+        diams_validos = [d for d, c in zip(diams, clusters) if len(c) >= 2]
+        if not diams_validos:
+            break
+        media = sum(diams_validos) / len(diams_validos)
+
+        # Cluster maior em diâmetro
+        i_grande = max(range(len(clusters)), key=lambda i: diams[i])
+        if diams[i_grande] <= media * fator_acima_media:
+            break  # já equilibrado
+
+        cluster_grande = clusters[i_grande]
+        if len(cluster_grande) < 3:
+            break  # não vale tirar de cluster tão pequeno
+
+        # Identifica a parada mais "fora" (mais distante do centróide)
+        lat_c = sum(e.lat for e in cluster_grande) / len(cluster_grande)
+        lng_c = sum(e.lng for e in cluster_grande) / len(cluster_grande)
+        idx_fora = max(
+            range(len(cluster_grande)),
+            key=lambda i: _haversine_km(cluster_grande[i].lat, cluster_grande[i].lng, lat_c, lng_c)
+        )
+        parada_fora = cluster_grande[idx_fora]
+
+        # Escolhe cluster destino: tem que ter (a) menos km que a média;
+        # (b) ser o cluster mais próximo da parada_fora dentro dessa filtragem;
+        # (c) span de paradas resultante ≤ span_paradas_max
+        candidatos = []
+        for j, c in enumerate(clusters):
+            if j == i_grande:
+                continue
+            # Cluster destino acumula 1 parada extra
+            tam_novo = len(c) + 1
+            tam_grande_novo = len(cluster_grande) - 1
+            tams_novos = [len(cl) for cl in clusters]
+            tams_novos[j] = tam_novo
+            tams_novos[i_grande] = tam_grande_novo
+            span_novo = max(tams_novos) - min(tams_novos)
+            if span_novo > span_paradas_max:
+                continue
+            # Distância do destino: usa centróide do cluster destino
+            if c:
+                lat_d = sum(e.lat for e in c) / len(c)
+                lng_d = sum(e.lng for e in c) / len(c)
+                d_dest = _haversine_km(parada_fora.lat, parada_fora.lng, lat_d, lng_d)
+            else:
+                d_dest = float('inf')
+            candidatos.append((d_dest, j))
+
+        if not candidatos:
+            break  # nenhum destino aceita
+
+        candidatos.sort(key=lambda t: t[0])
+        d_dest, j_dest = candidatos[0]
+        # Só move se o destino está consideravelmente mais próximo da parada
+        # do que o cluster atual (senão piora geral)
+        d_atual = _haversine_km(parada_fora.lat, parada_fora.lng, lat_c, lng_c)
+        if d_dest >= d_atual:
+            break  # nenhum destino melhora — para o rebalanceamento
+
+        # Move
+        clusters[i_grande].pop(idx_fora)
+        clusters[j_dest].append(parada_fora)
+
+    return clusters
+
+
 def kmeans_balanced(entregas, cd, m: int, *,
                      max_iter: int = 30,
-                     peso_angular: float = 0.1) -> list[list]:
-    """K-means com tamanho-alvo fixo + init setorial + penalty angular.
+                     peso_angular: float = 0.1,
+                     rebalancear_km: bool = True) -> list[list]:
+    """K-means com tamanho-alvo fixo + init setorial + penalty angular +
+    rebalanceamento opcional por km (move paradas externas de rotas
+    gigantes pra rotas concentradas).
 
     Args:
       entregas: lista de Entrega.
       cd: CD (referência pra init setorial e penalty angular).
       m: número de clusters.
-      max_iter: máximo de iterações.
+      max_iter: máximo de iterações do K-means.
       peso_angular: peso da diferença angular ao CD no custo de atribuição.
+      rebalancear_km: se True, depois do K-means roda pós-processamento
+        que tira paradas mais externas de clusters com diâmetro acima de
+        1.4× a média e move pra clusters mais próximos da parada (com
+        cap de span de paradas em 6).
 
     Returns:
-      Lista de m listas de Entrega, cada uma com floor(n/m) ou ceil(n/m).
+      Lista de m listas de Entrega.
     """
     n = len(entregas)
     if n == 0 or m <= 0:
@@ -188,10 +294,13 @@ def kmeans_balanced(entregas, cd, m: int, *,
                 novos.append(centroides[j])
         centroides = novos
 
-    return [
+    clusters = [
         [entregas[i] for i in range(n) if atribuicao[i] == j]
         for j in range(m)
     ]
+    if rebalancear_km:
+        clusters = _rebalancear_por_km(clusters, cd)
+    return clusters
 
 
 def sweep_clusters(entregas, cd, m: int) -> list[list]:
