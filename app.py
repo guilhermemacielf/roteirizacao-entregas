@@ -19,10 +19,10 @@ import os
 
 from flask import Flask, request, jsonify
 
-from motor.modelos import CD, Entregador
+from motor.modelos import CD, Entrega, Entregador
 from motor.io import carregar_entregas_texto, rotas_para_dict, sheets_para_csv_motor
-from motor.roteirizar import roteirizar
-from motor.matriz import MatrizError
+from motor.roteirizar import roteirizar, _tsp_cluster, _agrupar_lalamoves
+from motor.matriz import MatrizError, matriz as osrm_matriz
 from motor.geocode import (GeocodeError, carregar_cache, salvar_cache,
                             _normalizar, geocodificar)
 from motor.obs import extrair_janela
@@ -287,6 +287,249 @@ def api_rotear():
         ), 2)
 
     return jsonify(resultado)
+
+
+def _entrega_de_parada(p: dict) -> Entrega:
+    """Reconstrói uma Entrega a partir de um dict de parada vindo do front."""
+    return Entrega(
+        id=str(p.get("id") or ""),
+        lat=float(p["lat"]),
+        lng=float(p["lng"]),
+        nome=(p.get("nome") or "").strip(),
+        obs=(p.get("obs") or "").strip(),
+        bairro=(p.get("bairro") or "").strip(),
+        cidade=(p.get("cidade") or "").strip(),
+        janela_inicio=p.get("janela_inicio"),
+        janela_fim=p.get("janela_fim"),
+    )
+
+
+@app.route("/api/rotear/mover", methods=["POST"])
+def api_rotear_mover():
+    """Aplica movimentações manuais de entregas entre rotas e recalcula
+    o TSP só das rotas afetadas. Body:
+      {
+        "rotas": [...],     // estado atual completo (de /api/rotear)
+        "cd":    {...},
+        "movimentos": [
+          {"entrega_id": "abc-123", "para_rota_idx": 3},
+          ...
+        ]
+      }
+    Resposta: mesmo formato de /api/rotear, com as rotas atualizadas e
+    pagamento recalculado.
+    """
+    d = request.get_json(silent=True) or {}
+    rotas_in = d.get("rotas") or []
+    cd_dict = d.get("cd") or {}
+    movimentos = d.get("movimentos") or []
+
+    try:
+        cd = CD(lat=float(cd_dict["lat"]), lng=float(cd_dict["lng"]),
+                nome=cd_dict.get("nome", "CD"))
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"erro": "CD inválido"}), 400
+
+    # Mapa entrega_id → (idx_rota_origem, dict_parada). Pra cada movimento,
+    # achamos origem e movemos pra rota destino. Lalamoves são identificadas
+    # por candidata_lalamove=True; entregas movidas pra Lalamove vão pra
+    # uma "pool" e re-agrupamos no fim.
+    id_para_origem: dict[str, tuple[int, dict]] = {}
+    for ridx, r in enumerate(rotas_in):
+        for p in r.get("paradas") or []:
+            id_para_origem[str(p.get("id"))] = (ridx, p)
+
+    afetadas: set[int] = set()
+    paradas_por_rota: list[list[dict]] = [list(r.get("paradas") or []) for r in rotas_in]
+    for mov in movimentos:
+        eid = str(mov.get("entrega_id") or "")
+        try:
+            para = int(mov.get("para_rota_idx"))
+        except (TypeError, ValueError):
+            continue
+        origem = id_para_origem.get(eid)
+        if origem is None or para < 0 or para >= len(rotas_in) or origem[0] == para:
+            continue
+        ridx_o, parada = origem
+        # Remove da origem
+        paradas_por_rota[ridx_o] = [p for p in paradas_por_rota[ridx_o]
+                                     if str(p.get("id")) != eid]
+        # Adiciona no destino
+        paradas_por_rota[para] = list(paradas_por_rota[para]) + [parada]
+        afetadas.add(ridx_o)
+        afetadas.add(para)
+        # Atualiza mapa pra movimentos subsequentes que mexam nessa entrega
+        id_para_origem[eid] = (para, parada)
+
+    # Re-roteiriza só as afetadas.
+    # Pra entregadores normais: TSP local com matriz OSRM.
+    # Pra Lalamove: junta tudo das rotas lala afetadas e re-agrupa em rotas
+    # de até MAX_PARADAS_LALAMOVE pela proximidade.
+    rotas_dict_nova = list(rotas_in)
+    lalamove_pool: list[Entrega] = []
+    rotas_lala_idx: list[int] = [ridx for ridx, r in enumerate(rotas_in)
+                                  if r.get("candidata_lalamove")]
+    lala_afetada = any(ridx in afetadas for ridx in rotas_lala_idx)
+
+    # Coleta TODAS as entregas das Lalamoves (mantém pool unificado)
+    if lala_afetada:
+        for ridx in rotas_lala_idx:
+            for p in paradas_por_rota[ridx]:
+                lalamove_pool.append(_entrega_de_parada(p))
+            # Zera a rota Lalamove antiga (vai ser substituída)
+            rotas_dict_nova[ridx] = None
+
+    # TSP nas rotas normais afetadas
+    from motor.matriz import rota_geometria
+    for ridx in afetadas:
+        if ridx in rotas_lala_idx:
+            continue  # tratado abaixo
+        r = rotas_in[ridx]
+        ent_dict = r.get("entregador") or {}
+        if not ent_dict:
+            continue
+        try:
+            ent = Entregador(
+                id=str(ent_dict["id"]), nome=ent_dict["nome"],
+                lat=float(ent_dict["lat"]), lng=float(ent_dict["lng"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+
+        entregas_rota = [_entrega_de_parada(p) for p in paradas_por_rota[ridx]]
+        if not entregas_rota:
+            # Rota ficou vazia depois das movimentações
+            rotas_dict_nova[ridx] = {
+                **r, "paradas": [], "n_paradas": 0,
+                "distancia_km": 0, "duracao_s": 0,
+                "geometry": [[cd.lat, cd.lng], [ent.lat, ent.lng]],
+            }
+            continue
+
+        coords = ([(e.lat, e.lng) for e in entregas_rota]
+                  + [(cd.lat, cd.lng), (ent.lat, ent.lng)])
+        try:
+            mat = osrm_matriz(coords)
+        except MatrizError as e:
+            return jsonify({"erro": f"OSRM: {e}"}), 502
+
+        rota_nova, drops = _tsp_cluster(
+            entregas_rota, ent, cd, mat["distancia"], mat["duracao"],
+            servico_por_entrega_s=600, limite_rota_min=300, tempo_limite_s=10,
+        )
+        if rota_nova is None:
+            # Não conseguiu — manda todas pra Lalamove pool
+            lalamove_pool.extend(entregas_rota)
+            rotas_dict_nova[ridx] = {
+                **r, "paradas": [], "n_paradas": 0,
+                "distancia_km": 0, "duracao_s": 0,
+                "geometry": [[cd.lat, cd.lng], [ent.lat, ent.lng]],
+            }
+            continue
+
+        # Droppadas pelo solver (janela apertada) → Lalamove pool
+        lalamove_pool.extend(drops)
+
+        # Geometria real pra UI
+        seq_pts = ([(cd.lat, cd.lng)]
+                   + [(p.entrega.lat, p.entrega.lng) for p in rota_nova.paradas]
+                   + [(ent.lat, ent.lng)])
+        geom = rota_geometria(seq_pts)
+
+        rotas_dict_nova[ridx] = {
+            "entregador": {"id": ent.id, "nome": ent.nome,
+                           "lat": ent.lat, "lng": ent.lng},
+            "candidata_lalamove": False,
+            "n_paradas": rota_nova.n_paradas,
+            "distancia_km": round(rota_nova.distancia_m / 1000, 2),
+            "duracao_s": int(rota_nova.duracao_s),
+            "geometry": [[lat, lng] for lat, lng in geom],
+            "paradas": [
+                {
+                    "ordem": p.ordem, "id": p.entrega.id, "nome": p.entrega.nome,
+                    "lat": p.entrega.lat, "lng": p.entrega.lng,
+                    "bairro": p.entrega.bairro, "cidade": p.entrega.cidade,
+                    "obs": p.entrega.obs,
+                    "janela_inicio": p.entrega.janela_inicio,
+                    "janela_fim": p.entrega.janela_fim,
+                    "chegada_estimada_s": int(p.chegada_estimada_s),
+                }
+                for p in rota_nova.paradas
+            ],
+        }
+
+    # Re-agrupa Lalamoves se afetada
+    if lala_afetada or lalamove_pool:
+        novas_lalas = _agrupar_lalamoves(lalamove_pool, cd)
+        # Substitui as posições antigas pelas novas; se houver mais que vagas,
+        # adiciona no fim; se sobrar, remove.
+        rotas_lala_pos = [i for i, r in enumerate(rotas_dict_nova) if r is None]
+        # Aplica novas em posições antigas até onde der
+        for k, nova in enumerate(novas_lalas):
+            ent = nova.entregador
+            d_nova = {
+                "entregador": {"id": ent.id, "nome": ent.nome,
+                               "lat": ent.lat, "lng": ent.lng},
+                "candidata_lalamove": True,
+                "n_paradas": nova.n_paradas,
+                "distancia_km": round(nova.distancia_m / 1000, 2),
+                "duracao_s": int(nova.duracao_s),
+                "geometry": [(cd.lat, cd.lng)] + [(p.entrega.lat, p.entrega.lng) for p in nova.paradas],
+                "paradas": [
+                    {
+                        "ordem": p.ordem, "id": p.entrega.id, "nome": p.entrega.nome,
+                        "lat": p.entrega.lat, "lng": p.entrega.lng,
+                        "bairro": p.entrega.bairro, "cidade": p.entrega.cidade,
+                        "obs": p.entrega.obs,
+                        "janela_inicio": p.entrega.janela_inicio,
+                        "janela_fim": p.entrega.janela_fim,
+                        "chegada_estimada_s": int(p.chegada_estimada_s),
+                    }
+                    for p in nova.paradas
+                ],
+            }
+            if k < len(rotas_lala_pos):
+                rotas_dict_nova[rotas_lala_pos[k]] = d_nova
+            else:
+                rotas_dict_nova.append(d_nova)
+        # Posições Lalamove antigas não usadas viram None — limpa
+        rotas_dict_nova = [r for r in rotas_dict_nova if r is not None]
+
+    # Recalcula valor
+    valores = carregar_valores()
+    if valores:
+        calcular_valor_todas(rotas_dict_nova, valores)
+        pagamento_total = round(sum(
+            r["pagamento"]["valor_total"] for r in rotas_dict_nova
+            if r.get("pagamento")
+        ), 2)
+    else:
+        pagamento_total = None
+
+    # Resumo agregado (mesmo formato de rotas_para_dict)
+    rotas_normais = [r for r in rotas_dict_nova if not r.get("candidata_lalamove")]
+    rotas_lala = [r for r in rotas_dict_nova if r.get("candidata_lalamove")]
+    total_entregas = sum(r.get("n_paradas", 0) for r in rotas_dict_nova)
+    total_km = round(sum(r.get("distancia_km", 0) for r in rotas_dict_nova), 1)
+    resp = {
+        "cd": {"lat": cd.lat, "lng": cd.lng, "nome": cd.nome},
+        "rotas": rotas_dict_nova,
+        "resumo": {
+            "n_rotas": len(rotas_dict_nova),
+            "n_rotas_entregadores": len(rotas_normais),
+            "n_rotas_lalamove": len(rotas_lala),
+            "total_entregas": total_entregas,
+            "entregas_lalamove": sum(r.get("n_paradas", 0) for r in rotas_lala),
+            "total_km": total_km,
+            "km_lalamove": round(sum(r.get("distancia_km", 0) for r in rotas_lala), 1),
+        },
+        "n_entregas_entrada": total_entregas,
+    }
+    if pagamento_total is not None:
+        resp["valores"] = valores
+        resp["pagamento_total"] = pagamento_total
+
+    return jsonify(resp)
 
 
 @app.route("/api/entregadores/sincronizar", methods=["POST"])
