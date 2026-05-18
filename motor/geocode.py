@@ -99,12 +99,26 @@ def _expandir_abrev(s: str) -> str:
 # palavra-chave + 1 token (número, letra simples ou combinação tipo "401",
 # "A", "B2", "1701/B"). Propositalmente NÃO avança pra o próximo token —
 # o que vem depois costuma ser o bairro (ex: "Apt 302 Jaraguá").
+# Aceita separador `:`, `.`, `-` OU espaço entre palavra-chave e número
+# (ex: "Apt:801", "Apto.5", "Ap-12B").
 _COMPLEMENTO_RE = re.compile(
-    r"\s+(?:Apt\.?|Apto\.?|Ap\.?|Apartamento|Casa|Bl\.?|Bloco|Andar|"
+    r"\s+(?:Apt\.?|Apto\.?|Ap\.?|Apartamento|Apart\.?|Apro\.?|Casa|Bl\.?|Bloco|Andar|"
     r"Predio|Prédio|Loja|Sala|Box|Cobertura|Cob\.?|Fundos|Frente|Conj\.?)"
-    r"\s+[\dA-Za-z][\dA-Za-z\-/º°]*",
+    r"[\s:.\-]+[\dA-Za-z][\dA-Za-z\-/º°]*",
     flags=re.IGNORECASE,
 )
+
+# Captura "número/número" (apartamento) ou "número-letra/número" — comum no
+# Instabuy, ex: "253/401" significa "número 253, apto 401".
+_NUM_BARRA_RE = re.compile(r"(\d+)/[\dA-Za-z]+", flags=re.IGNORECASE)
+
+# Número duplicado: "718 718" ou "6 235" (rua,número  número-extra) —
+# o segundo é complemento/apartamento sem palavra-chave. Pega só o primeiro.
+_NUM_DUP_RE = re.compile(r"(\b\d{1,5})(\s+\d{2,5}\b)+")
+
+# "35 402B" — número (rua) + número-letra (apartamento) sem palavra-chave.
+# Comum no Instabuy. Pega só o primeiro número.
+_NUM_APT_LETRA_RE = re.compile(r"(\b\d{1,5})\s+\d{1,5}[A-Za-z]\b")
 
 # Textos de referência ("ao lado de", "perto de", "casa de muro de pedra")
 # que o cliente coloca como pista visual — irrelevante pro geocoder.
@@ -134,6 +148,12 @@ def _gerar_variacoes(endereco: str) -> list[str]:
     s = _CD_REF_RE.sub(" ", s)
     s_limpo = _COMPLEMENTO_RE.sub(" ", s)
     s_limpo = _REFERENCIA_RE.sub(" ", s_limpo)
+    # "253/401" → "253" (pega só o número da rua; depois da barra é apto)
+    s_limpo = _NUM_BARRA_RE.sub(r"\1", s_limpo)
+    # "Rua X 718 718 2301" → "Rua X 718" (Instabuy duplica número + apto)
+    s_limpo = _NUM_DUP_RE.sub(r"\1", s_limpo)
+    # "Rua X 35 402B" → "Rua X 35" (número da rua + apto sem palavra-chave)
+    s_limpo = _NUM_APT_LETRA_RE.sub(r"\1", s_limpo)
     s_limpo = re.sub(r"\s+", " ", s_limpo).strip(" ,;")
 
     # Extrai CEP (padrão XXXXX-XXX ou XXXXXXXX)
@@ -186,13 +206,29 @@ def _gerar_variacoes(endereco: str) -> list[str]:
 
 
 # ── Consultas aos provedores ─────────────────────────────────
-def _consultar_nominatim(endereco: str) -> tuple[float, float] | None:
-    """Uma consulta ao Nominatim. Devolve (lat, lng) ou None se não achar."""
+def _consultar_nominatim(endereco: str,
+                          exigir_rua: bool = True,
+                          cep_esperado: str | None = None) -> tuple[float, float] | None:
+    """Uma consulta ao Nominatim. Devolve (lat, lng) ou None se não achar.
+
+    Quando `exigir_rua=True` (default), REJEITA resultados sem `road` no
+    address (centroides de cidade). Sem isso, queries tipo
+    "30575-365, Belo Horizonte, MG, Brasil" (CEP desconhecido) retornavam
+    o centroide de BH (~-19.92, -43.94) — todos endereços assim viravam
+    o mesmo ponto.
+
+    Quando `cep_esperado` é passado, REJEITA resultados cujo postcode não
+    bate (compara só os 5 primeiros dígitos pra tolerar formato). Usado
+    pra queries só-CEP onde o resultado tem que estar realmente no CEP.
+
+    Pra queries que SÃO de centroide de bairro/cidade (fallbacks
+    intencionais), passar `exigir_rua=False`.
+    """
     try:
         r = requests.get(
             f"{NOMINATIM_URL}/search",
             params={"q": endereco, "format": "json", "limit": 1,
-                    "countrycodes": "br"},
+                    "countrycodes": "br", "addressdetails": 1},
             headers={"User-Agent": USER_AGENT},
             timeout=30,
         )
@@ -203,7 +239,18 @@ def _consultar_nominatim(endereco: str) -> tuple[float, float] | None:
     if not data:
         return None
     try:
-        return float(data[0]["lat"]), float(data[0]["lon"])
+        item = data[0]
+        addr = item.get("address") or {}
+        if exigir_rua:
+            if not any(addr.get(k) for k in ("road", "pedestrian", "path",
+                                              "residential", "footway")):
+                return None
+        if cep_esperado:
+            cep_query = re.sub(r"\D", "", cep_esperado)[:5]
+            cep_result = re.sub(r"\D", "", addr.get("postcode") or "")[:5]
+            if cep_query and cep_result != cep_query:
+                return None
+        return float(item["lat"]), float(item["lon"])
     except (KeyError, IndexError, ValueError, TypeError):
         return None
 
@@ -272,11 +319,12 @@ def _consultar_centroide_bairro(bairro: str, cidade: str) -> tuple[float, float]
     ("Belvedere, Belo Horizonte, MG, Brasil"). Erro típico: 300-800m, mas
     o entregador conhece o bairro e a casa fica perto disso. Pro CVRP de
     120 paradas em escala de cidade, esse erro é tolerável (melhor que
-    deixar a entrega de fora)."""
+    deixar a entrega de fora). Não exige rua — é centroide de bairro
+    por definição."""
     if not bairro:
         return None
     q = f"{bairro}, {cidade or 'Belo Horizonte'}, MG, Brasil"
-    return _consultar_nominatim(q)
+    return _consultar_nominatim(q, exigir_rua=False)
 
 
 def _extrair_cep(endereco: str) -> str | None:
@@ -330,9 +378,14 @@ def _consultar_em_cascata(endereco: str) -> tuple[float, float] | None:
     if not variacoes:
         return None
 
-    # 1. Nominatim com variações
+    cep = _extrair_cep(endereco)
+
+    # 1. Nominatim com variações. Pra a 3ª (só CEP), valida postcode
+    # do resultado pra evitar fallback silencioso pro centroide BH.
     for i, v in enumerate(variacoes):
-        coord = _consultar_nominatim(v)
+        # v3 é sempre "CEP, cidade, MG, Brasil" se houver CEP
+        eh_so_cep = (cep is not None and v.startswith(cep))
+        coord = _consultar_nominatim(v, cep_esperado=cep if eh_so_cep else None)
         time.sleep(PAUSA_S)
         if coord is not None:
             return coord
@@ -362,17 +415,12 @@ def _consultar_em_cascata(endereco: str) -> tuple[float, float] | None:
                         bairro, cidade, endereco)
             return coord
 
-    # 5. Centroide da cidade (~1-2km) — último recurso. Pega TUDO que
-    # tem cidade conhecida e evita ficar de fora da rota. Erro maior:
-    # o entregador pode precisar conferir o endereço na mão depois.
-    if cidade:
-        coord = _consultar_nominatim(f"{cidade}, MG, Brasil")
-        time.sleep(PAUSA_S)
-        if coord is not None:
-            log.warning("geocode MUITO APROXIMADO pela cidade %s (verificar!): %s",
-                        cidade, endereco)
-            return coord
-
+    # Fallback de "centroide da cidade" REMOVIDO — causava todos os
+    # endereços não-resolvidos virarem o MESMO ponto no mapa (centroide
+    # de BH ~ -19.92, -43.94), bagunçando o cluster e o TSP. Melhor
+    # retornar None e deixar o endereço aparecer na lista de falhas pra
+    # o usuário corrigir manualmente via editor de ponto (busca por
+    # endereço ou coords).
     return None
 
 
@@ -439,6 +487,55 @@ def limpar_falhas(cache: dict | None = None) -> int:
     if proprio:
         salvar_cache(cache)
     return len(removidas)
+
+
+def purgar_centroides_genericos(
+    cache: dict | None = None,
+    tolerancia_metros: float = 50,
+) -> tuple[int, list]:
+    """Remove do cache entradas que caíram em centroides genéricos de cidade
+    (ex: todos endereços em BH apontando pra (-19.919, -43.938) que é a
+    Praça Sete genérica). Detecta valores que se repetem muito — qualquer
+    coord usada por > 1 endereço dentro de `tolerancia_metros` é suspeita
+    e vai pra purga.
+
+    Retorna (n_removidas, [(lat, lng, n_apontamentos), ...]).
+    """
+    proprio = cache is None
+    if proprio:
+        cache = carregar_cache()
+
+    # Agrupa coords por proximidade (chave quantizada ~50m).
+    # 50m ≈ 0.00045° de latitude. Usamos 0.0005° = ~55m de bucket.
+    bucket = max(0.0005, tolerancia_metros / 111000)
+    from collections import defaultdict
+    grupos = defaultdict(list)
+    for k, v in cache.items():
+        if not v:
+            continue
+        try:
+            lat, lng = float(v[0]), float(v[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        chave_q = (round(lat / bucket), round(lng / bucket))
+        grupos[chave_q].append((k, lat, lng))
+
+    # Qualquer bucket com >= 2 endereços apontando pra ele é suspeito.
+    duplicados = []
+    chaves_remover = set()
+    for q, lista in grupos.items():
+        if len(lista) >= 2:
+            lat0, lng0 = lista[0][1], lista[0][2]
+            duplicados.append((round(lat0, 6), round(lng0, 6), len(lista)))
+            for k, _, _ in lista:
+                chaves_remover.add(k)
+
+    for k in chaves_remover:
+        del cache[k]
+    if proprio:
+        salvar_cache(cache)
+    duplicados.sort(key=lambda t: -t[2])
+    return len(chaves_remover), duplicados
 
 
 if __name__ == "__main__":

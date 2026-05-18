@@ -24,7 +24,8 @@ from motor.io import carregar_entregas_texto, rotas_para_dict, sheets_para_csv_m
 from motor.roteirizar import roteirizar, _tsp_cluster, _agrupar_lalamoves
 from motor.matriz import MatrizError, matriz as osrm_matriz
 from motor.geocode import (GeocodeError, carregar_cache, salvar_cache,
-                            _normalizar, geocodificar)
+                            _normalizar, geocodificar,
+                            purgar_centroides_genericos)
 from motor.obs import extrair_janela
 from motor.sheets_write import escrever_rotas, SheetsWriteError
 from motor.entregadores_sheet import sincronizar_entregadores, carregar_valores
@@ -191,6 +192,23 @@ def api_geocode_manual():
         "janela_inicio": ini,
         "janela_fim":    fim,
     })
+
+
+@app.route("/api/geocode/purgar-genericos", methods=["POST"])
+def api_geocode_purgar():
+    """Remove do cache de geocoding entradas que caíram em centroides
+    genéricos (coords compartilhadas por 2+ endereços diferentes).
+    Pra reaproveitar quando descobre que vários endereços estão TODOS
+    no mesmo ponto do mapa por causa de fallback do Nominatim.
+    Após purgar, próxima sincronização da planilha re-geocodifica.
+
+    Body opcional: {"tolerancia_metros": 50}
+    Resposta: {"removidas": N, "duplicados": [[lat, lng, n_apontamentos]...]}
+    """
+    d = request.get_json(silent=True) or {}
+    tol = float(d.get("tolerancia_metros", 50))
+    n, dups = purgar_centroides_genericos(tolerancia_metros=tol)
+    return jsonify({"removidas": n, "duplicados": dups})
 
 
 @app.route("/api/geocode/buscar", methods=["POST"])
