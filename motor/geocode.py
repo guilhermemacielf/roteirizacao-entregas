@@ -390,12 +390,15 @@ def _consultar_em_cascata(endereco: str) -> tuple[float, float] | None:
         if coord is not None:
             return coord
 
-    # 2. Photon
-    coord = _consultar_photon(variacoes[0])
-    if coord is not None:
-        log.info("geocode via Photon: %s", endereco)
-        return coord
-    time.sleep(PAUSA_S / 2)
+    # 2. Photon DESABILITADO — servidor público vinha retornando 400 pra
+    # todas as queries (talvez bloqueou nosso User-Agent ou só dá 400 mesmo
+    # em queries longas). Desperdiçava ~0.5s por endereço sem trazer resultado.
+    # Pra reativar, descomentar quando o server voltar a funcionar.
+    # coord = _consultar_photon(variacoes[0])
+    # if coord is not None:
+    #     log.info("geocode via Photon: %s", endereco)
+    #     return coord
+    # time.sleep(PAUSA_S / 2)
 
     # 3. BrasilAPI v2 pelo CEP (centroide ~50m)
     cep = _extrair_cep(endereco)
@@ -451,24 +454,33 @@ def geocodificar(endereco: str, cache: dict | None = None) -> tuple[float, float
 
 
 def geocodificar_lista(
-    enderecos: list[str], progresso=None
+    enderecos: list[str], progresso=None,
+    salvar_a_cada: int = 10,
 ) -> dict[str, tuple[float, float] | None]:
     """Geocodifica uma lista de endereços: carrega o cache uma vez, consulta
-    só os que faltam (com pausa entre requisições de rede), salva no fim.
+    só os que faltam (com pausa entre requisições de rede), salva no fim
+    E incrementalmente a cada `salvar_a_cada` consultas pra não perder
+    progresso se o processo for interrompido.
 
     `progresso(feito, total)` é chamado a cada item, se fornecido.
     Retorno: {endereco_original: (lat,lng) | None}."""
     cache = carregar_cache()
     resultado: dict = {}
     total = len(enderecos)
+    n_consultas_pendentes = 0
     houve_consulta = False
     for i, end in enumerate(enderecos, start=1):
         chave = _normalizar(end)
         if chave and chave not in cache:
             houve_consulta = True
+            n_consultas_pendentes += 1
         resultado[end] = geocodificar(end, cache=cache)
         if progresso:
             progresso(i, total)
+        # Salva incrementalmente pra não perder progresso em sync longo
+        if n_consultas_pendentes >= salvar_a_cada:
+            salvar_cache(cache)
+            n_consultas_pendentes = 0
     if houve_consulta:
         salvar_cache(cache)
     return resultado
