@@ -38,6 +38,7 @@ PHOTON_URL = os.environ.get(
     "PHOTON_URL", "https://photon.komoot.io"
 ).rstrip("/")
 USER_AGENT = os.environ.get("GEOCODE_USER_AGENT", "roteirizacao-entregas/1.0")
+GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "").strip()
 CACHE_PATH = os.environ.get(
     "GEOCODE_CACHE",
     os.path.join(os.path.dirname(__file__), "..", "dados", "geocode.cache.json"),
@@ -295,6 +296,58 @@ def _consultar_photon(endereco: str) -> tuple[float, float] | None:
         return None
 
 
+def _consultar_google_maps(endereco: str) -> tuple[float, float] | None:
+    """Google Maps Geocoding API. Precisa de GOOGLE_MAPS_API_KEY na env.
+    Cobertura excelente no Brasil; vale a pena quando Nominatim falha
+    (endereços com ruído, complementos não-padrão, etc.). 10k requests/mês
+    grátis no Google Cloud (pra volume maior, US$5/1000).
+
+    Validações:
+      - status == "OK" e há ao menos um result
+      - tipo do match contém 'street_address', 'premise', 'subpremise',
+        'point_of_interest' (não aceita só 'locality' ou 'route' sem
+        número — equivalente ao exigir_rua=True do Nominatim).
+    """
+    if not GOOGLE_MAPS_API_KEY:
+        return None
+    try:
+        r = requests.get(
+            "https://maps.googleapis.com/maps/api/geocode/json",
+            params={"address": endereco, "region": "br",
+                    "key": GOOGLE_MAPS_API_KEY},
+            timeout=30,
+        )
+        r.raise_for_status()
+        data = r.json()
+    except requests.RequestException as e:
+        log.warning("google maps falhou em %s: %s", endereco[:50], e)
+        return None
+    status = data.get("status")
+    if status == "ZERO_RESULTS":
+        return None
+    if status != "OK":
+        # OVER_QUERY_LIMIT, REQUEST_DENIED, INVALID_REQUEST — log + None
+        msg = data.get("error_message") or "(sem msg)"
+        log.warning("google maps status=%s: %s — query: %s", status, msg, endereco[:50])
+        return None
+    results = data.get("results") or []
+    if not results:
+        return None
+    item = results[0]
+    # Validação de qualidade: só aceita resultados precisos (não centroide
+    # de cidade/região). Tipos aceitos: street_address, premise (prédio),
+    # subpremise (apartamento), point_of_interest (estabelecimento).
+    tipos_validos = {"street_address", "premise", "subpremise",
+                      "point_of_interest", "establishment"}
+    if not (set(item.get("types") or []) & tipos_validos):
+        return None
+    try:
+        loc = item["geometry"]["location"]
+        return float(loc["lat"]), float(loc["lng"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def _consultar_brasilapi_cep(cep: str) -> tuple[float, float] | None:
     """Fallback automático pelo CEP: BrasilAPI v2 retorna coordenadas do
     centroide do CEP quando disponível. Precisão típica: ~50m (faixa do
@@ -379,10 +432,13 @@ def _consultar_em_cascata(endereco: str) -> tuple[float, float] | None:
     """Tenta o endereço em vários provedores até achar uma coordenada.
 
     Ordem:
-      1. Nominatim com variações limpas (v1, v2, v3) — preciso quando funciona
-      2. Photon (Komoot) — parser mais tolerante pra queries bagunçadas
-      3. BrasilAPI v2 pelo CEP — centroide do CEP (~50m de erro)
-      4. Nominatim por bairro + cidade — centroide do bairro (~500m de erro,
+      1. Nominatim variações v1 (rua+bairro) e v2 (rua sem bairro) — grátis
+         e preciso quando o endereço está limpo
+      2. Google Maps Geocoding (se GOOGLE_MAPS_API_KEY setada) — pago,
+         resolve casos com ruído que confundem o Nominatim
+      3. Nominatim v3 (só CEP) — valida postcode pra evitar centroide BH
+      4. BrasilAPI v2 pelo CEP — centroide do CEP (~50m de erro)
+      5. Nominatim por bairro + cidade — centroide do bairro (~500m de erro,
          último recurso pra entrega não ficar de fora)
 
     A precisão cai conforme avança nos fallbacks. O CVRP em escala de
@@ -394,13 +450,14 @@ def _consultar_em_cascata(endereco: str) -> tuple[float, float] | None:
 
     cep = _extrair_cep(endereco)
 
-    # 1. Nominatim com variações. Pra a 3ª (só CEP), valida postcode
-    # do resultado pra evitar fallback silencioso pro centroide BH.
-    # GeocodeError em UMA variação não derruba a cascade — tenta a próxima.
-    for i, v in enumerate(variacoes):
-        eh_so_cep = (cep is not None and v.startswith(cep))
+    # 1. Nominatim — variações v1 (rua completa) e v2 (sem bairro).
+    # Pula v3 (só CEP) por enquanto; Google Maps tem chance melhor.
+    # GeocodeError em UMA variação não derruba a cascade.
+    nominatim_v1_v2 = [v for v in variacoes
+                       if not (cep is not None and v.startswith(cep))]
+    for i, v in enumerate(nominatim_v1_v2):
         try:
-            coord = _consultar_nominatim(v, cep_esperado=cep if eh_so_cep else None)
+            coord = _consultar_nominatim(v)
         except GeocodeError as e:
             log.warning("Nominatim falhou em variação %d (%s): %s", i, v[:50], e)
             coord = None
@@ -408,25 +465,36 @@ def _consultar_em_cascata(endereco: str) -> tuple[float, float] | None:
         if coord is not None:
             return coord
 
-    # 2. Photon DESABILITADO — servidor público vinha retornando 400 pra
-    # todas as queries (talvez bloqueou nosso User-Agent ou só dá 400 mesmo
-    # em queries longas). Desperdiçava ~0.5s por endereço sem trazer resultado.
-    # Pra reativar, descomentar quando o server voltar a funcionar.
-    # coord = _consultar_photon(variacoes[0])
-    # if coord is not None:
-    #     log.info("geocode via Photon: %s", endereco)
-    #     return coord
-    # time.sleep(PAUSA_S / 2)
+    # 2. Google Maps — fallback preciso pra endereços com ruído que
+    # confundem o Nominatim (complementos não-padrão, referências
+    # embutidas, etc.). Só dispara se GOOGLE_MAPS_API_KEY setada.
+    if GOOGLE_MAPS_API_KEY:
+        coord = _consultar_google_maps(endereco)
+        if coord is not None:
+            log.info("geocode via Google Maps: %s", endereco)
+            return coord
 
-    # 3. BrasilAPI v2 pelo CEP (centroide ~50m)
-    cep = _extrair_cep(endereco)
+    # 3. Nominatim v3 (só CEP) — valida postcode pra evitar fallback BH
+    if cep:
+        v3 = f"{cep}, Belo Horizonte, MG, Brasil"
+        try:
+            coord = _consultar_nominatim(v3, cep_esperado=cep)
+        except GeocodeError as e:
+            log.warning("Nominatim CEP falhou: %s", e)
+            coord = None
+        time.sleep(PAUSA_S)
+        if coord is not None:
+            return coord
+
+    # 4. BrasilAPI v2 pelo CEP (centroide ~50m)
+    # 4. BrasilAPI v2 pelo CEP (centroide ~50m). Sem rate limit.
     if cep:
         coord = _consultar_brasilapi_cep(cep)
         if coord is not None:
             log.info("geocode aproximado via CEP (BrasilAPI): %s", endereco)
             return coord
 
-    # 4. Centroide do bairro (~500m)
+    # 5. Centroide do bairro (~500m)
     bairro, cidade = _extrair_bairro_cidade(endereco)
     if bairro:
         try:
