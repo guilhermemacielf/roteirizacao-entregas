@@ -139,8 +139,8 @@ def _diametro_km(cluster, cd):
 
 
 def _reduzir_entrelacamento(clusters, cd,
-                             raio_vizinhanca_m: float = 400,
-                             max_iter: int = 100):
+                             raio_vizinhanca_m: float = 800,
+                             max_iter: int = 150):
     """Anti-entrelaçamento por VIZINHANÇA (não por centróide).
 
     Pra cada entrega, conta quantos vizinhos < raio_vizinhanca_m estão em
@@ -223,6 +223,84 @@ def _reduzir_entrelacamento(clusters, cd,
         if not fez_swap:
             break
 
+    return clusters
+
+
+def _km_tsp_greedy(entregas, cd):
+    """Estima km total de uma rota via nearest-neighbor a partir do CD.
+    Aproximação grosseira (linha reta vs ruas), mas rápida (O(n²)) e
+    boa o suficiente pra comparar tamanhos de rota entre si."""
+    if not entregas:
+        return 0.0
+    restantes = list(entregas)
+    atual = (cd.lat, cd.lng)
+    km = 0.0
+    while restantes:
+        idx_min = min(range(len(restantes)),
+                       key=lambda i: _haversine_km(atual[0], atual[1],
+                                                    restantes[i].lat, restantes[i].lng))
+        prox = restantes.pop(idx_min)
+        km += _haversine_km(atual[0], atual[1], prox.lat, prox.lng)
+        atual = (prox.lat, prox.lng)
+    return km
+
+
+def _reduzir_clusters_longos(clusters, cd,
+                              km_max: float = 50.0,
+                              n_min_paradas: int = 10):
+    """Pra cada cluster com km estimado > km_max, move suas paradas mais
+    isoladas pra outros clusters mais próximos delas. Para quando:
+      - o cluster cai abaixo de km_max, OU
+      - o cluster atinge n_min_paradas (10), OU
+      - não há mais parada que esteja mais perto de outro cluster.
+
+    Resolve o caso reportado: rota da Camila com 18 paradas atravessando
+    Buritis → Sabará/Nova Lima (~80km). Tira as 5-8 paradas externas pras
+    rotas vizinhas; Camila fica com 10-13 mas concentrada.
+    """
+    if not clusters or len(clusters) < 2:
+        return clusters
+
+    for ci in range(len(clusters)):
+        if len(clusters[ci]) <= n_min_paradas:
+            continue
+        # Calcula km do próprio cluster
+        km = _km_tsp_greedy(clusters[ci], cd)
+        guarda = 0
+        while km > km_max and len(clusters[ci]) > n_min_paradas and guarda < 50:
+            guarda += 1
+            cluster = clusters[ci]
+            # Centróides atuais
+            centroides = []
+            for cj in clusters:
+                if cj:
+                    lat_j = sum(e.lat for e in cj) / len(cj)
+                    lng_j = sum(e.lng for e in cj) / len(cj)
+                    centroides.append((lat_j, lng_j))
+                else:
+                    centroides.append(None)
+            lat_c, lng_c = centroides[ci]
+            # Acha a parada com MAIOR ganho ao mover pra outro cluster
+            melhor = None
+            melhor_ganho = 0
+            for p_idx, p in enumerate(cluster):
+                d_propria = _haversine_km(p.lat, p.lng, lat_c, lng_c)
+                for j in range(len(clusters)):
+                    if j == ci or centroides[j] is None:
+                        continue
+                    d_outro = _haversine_km(p.lat, p.lng, centroides[j][0], centroides[j][1])
+                    if d_outro >= d_propria:
+                        continue
+                    ganho = d_propria - d_outro
+                    if ganho > melhor_ganho:
+                        melhor_ganho = ganho
+                        melhor = (p_idx, j)
+            if melhor is None:
+                break  # nenhuma parada com cluster mais próximo
+            p_idx, j_dest = melhor
+            p = cluster.pop(p_idx)
+            clusters[j_dest].append(p)
+            km = _km_tsp_greedy(cluster, cd)
     return clusters
 
 
@@ -447,16 +525,26 @@ def kmeans_balanced(entregas, cd, m: int, *,
         [entregas[i] for i in range(n) if atribuicao[i] == j]
         for j in range(m)
     ]
-    if rebalancear_km:
-        clusters = _rebalancear_por_km(clusters, cd)
-    # Move paradas isoladas (que estão MUITO mais perto do centróide de
-    # outro cluster) — pega o caso Camila com paradas atravessando a
-    # cidade que poderiam estar em rotas vizinhas.
-    clusters = _mover_paradas_isoladas(clusters, cd)
-    # Sempre roda anti-entrelaçamento: troca pares próximos em clusters
-    # diferentes que melhorem dist intra-cluster. Resolve Tamara/Camila
-    # com entregas vizinhas em rotas separadas.
-    clusters = _reduzir_entrelacamento(clusters, cd)
+    # Pós-processos em loop até estabilizar (cada um pode abrir espaço
+    # pro próximo). Tipicamente 2-3 iterações resolvem.
+    for passada in range(5):
+        snapshot = [list(c) for c in clusters]  # cópia rasa pra comparar
+        if rebalancear_km:
+            clusters = _rebalancear_por_km(clusters, cd)
+        # Move paradas isoladas (MUITO mais perto do centróide de outro
+        # cluster) — caso Camila com paradas atravessando a cidade.
+        clusters = _mover_paradas_isoladas(clusters, cd)
+        # Rotas com > 50km perdem paradas externas até cair abaixo de
+        # 50km OU atingir 10 paradas mínimo.
+        clusters = _reduzir_clusters_longos(clusters, cd)
+        # Anti-entrelaçamento por vizinhança: pares próximos em clusters
+        # diferentes (raio 800m) trocam.
+        clusters = _reduzir_entrelacamento(clusters, cd)
+        # Convergiu se nenhum cluster mudou de composição
+        sets_antes = [set(id(e) for e in c) for c in snapshot]
+        sets_depois = [set(id(e) for e in c) for c in clusters]
+        if sets_antes == sets_depois:
+            break
     return clusters
 
 
