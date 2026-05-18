@@ -42,7 +42,8 @@ CACHE_PATH = os.environ.get(
     "GEOCODE_CACHE",
     os.path.join(os.path.dirname(__file__), "..", "dados", "geocode.cache.json"),
 )
-PAUSA_S = 1.1  # respeita o limite de ~1 req/s do Nominatim público
+PAUSA_S = 1.5  # respeita o limite de ~1 req/s do Nominatim público (com folga)
+MAX_RETRY_429 = 3  # tentativas em 429 (com backoff exponencial)
 
 # Cidades da região metropolitana de BH (pra detectar o sufixo do endereço).
 # Lista pequena de propósito — adiciona conforme aparecer endereço de fora.
@@ -224,18 +225,31 @@ def _consultar_nominatim(endereco: str,
     Pra queries que SÃO de centroide de bairro/cidade (fallbacks
     intencionais), passar `exigir_rua=False`.
     """
-    try:
-        r = requests.get(
-            f"{NOMINATIM_URL}/search",
-            params={"q": endereco, "format": "json", "limit": 1,
-                    "countrycodes": "br", "addressdetails": 1},
-            headers={"User-Agent": USER_AGENT},
-            timeout=30,
-        )
-        r.raise_for_status()
-        data = r.json()
-    except requests.RequestException as e:
-        raise GeocodeError(f"falha ao consultar Nominatim: {e}") from e
+    data = None
+    for tentativa in range(MAX_RETRY_429):
+        try:
+            r = requests.get(
+                f"{NOMINATIM_URL}/search",
+                params={"q": endereco, "format": "json", "limit": 1,
+                        "countrycodes": "br", "addressdetails": 1},
+                headers={"User-Agent": USER_AGENT},
+                timeout=30,
+            )
+            if r.status_code == 429:
+                # Rate limit — espera Retry-After do header ou backoff exp
+                espera = float(r.headers.get("Retry-After", 0)) or (2 ** tentativa * 5)
+                espera = min(espera, 60)  # cap em 60s
+                log.warning("Nominatim 429 (tentativa %d/%d), esperando %.1fs",
+                            tentativa + 1, MAX_RETRY_429, espera)
+                time.sleep(espera)
+                continue
+            r.raise_for_status()
+            data = r.json()
+            break
+        except requests.RequestException as e:
+            if tentativa + 1 >= MAX_RETRY_429:
+                raise GeocodeError(f"falha ao consultar Nominatim: {e}") from e
+            time.sleep(2 ** tentativa * 2)  # backoff curto pra outros erros
     if not data:
         return None
     try:
@@ -382,10 +396,14 @@ def _consultar_em_cascata(endereco: str) -> tuple[float, float] | None:
 
     # 1. Nominatim com variações. Pra a 3ª (só CEP), valida postcode
     # do resultado pra evitar fallback silencioso pro centroide BH.
+    # GeocodeError em UMA variação não derruba a cascade — tenta a próxima.
     for i, v in enumerate(variacoes):
-        # v3 é sempre "CEP, cidade, MG, Brasil" se houver CEP
         eh_so_cep = (cep is not None and v.startswith(cep))
-        coord = _consultar_nominatim(v, cep_esperado=cep if eh_so_cep else None)
+        try:
+            coord = _consultar_nominatim(v, cep_esperado=cep if eh_so_cep else None)
+        except GeocodeError as e:
+            log.warning("Nominatim falhou em variação %d (%s): %s", i, v[:50], e)
+            coord = None
         time.sleep(PAUSA_S)
         if coord is not None:
             return coord
@@ -411,7 +429,11 @@ def _consultar_em_cascata(endereco: str) -> tuple[float, float] | None:
     # 4. Centroide do bairro (~500m)
     bairro, cidade = _extrair_bairro_cidade(endereco)
     if bairro:
-        coord = _consultar_centroide_bairro(bairro, cidade)
+        try:
+            coord = _consultar_centroide_bairro(bairro, cidade)
+        except GeocodeError as e:
+            log.warning("Centroide do bairro falhou em %s: %s", bairro, e)
+            coord = None
         time.sleep(PAUSA_S)
         if coord is not None:
             log.warning("geocode APROXIMADO pelo bairro %s/%s: %s",
