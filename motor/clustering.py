@@ -376,9 +376,12 @@ def atribuir(clusters: list[list], entregadores, cd,
     if m_c == 0 or m_e == 0:
         return {}
 
-    # Centróide e Counter de bairros por cluster (clusters vazios = CD).
+    # Centróide e Counter de localidades por cluster.
+    # Localidade = bairro OU cidade (preferências do entregador podem ser
+    # tanto bairro de BH "Pampulha" quanto cidade "Contagem", "Betim", etc).
+    # Sem incluir cidade, entregas fora de BH nunca bateriam com preferências.
     centroides = []
-    bairros_por_c = []
+    locs_por_c = []
     for c in clusters:
         if c:
             lat = sum(e.lat for e in c) / len(c)
@@ -386,7 +389,13 @@ def atribuir(clusters: list[list], entregadores, cd,
         else:
             lat, lng = cd.lat, cd.lng
         centroides.append((lat, lng))
-        bairros_por_c.append(Counter(_norm(e.bairro) for e in c if e.bairro))
+        # Cada entrega contribui com SET {bairro, cidade} (sem dupla contagem
+        # se forem iguais ou ambos vazios).
+        loc_counter = Counter()
+        for e in c:
+            for tag in {_norm(e.bairro), _norm(e.cidade)} - {""}:
+                loc_counter[tag] += 1
+        locs_por_c.append(loc_counter)
 
     # Preferências de cada entregador (set normalizado).
     prefs_por_e = [
@@ -402,9 +411,10 @@ def atribuir(clusters: list[list], entregadores, cd,
         for j in range(m_e):
             ent = entregadores[j]
             dist_km = _haversine_km(ci_lat, ci_lng, ent.lat, ent.lng)
-            # Entregas do cluster cujo bairro está nas preferências do entregador
-            n_match = sum(qtd for b, qtd in bairros_por_c[i].items()
-                          if b in prefs_por_e[j])
+            # Entregas do cluster cuja localidade (bairro ou cidade) está
+            # nas preferências do entregador.
+            n_match = sum(qtd for loc, qtd in locs_por_c[i].items()
+                          if loc in prefs_por_e[j])
             custo = dist_km - peso_preferencia_km * n_match
             linha.append(custo)
         custos.append(linha)

@@ -826,44 +826,64 @@ function desenharRotas(filtroIdx = null) {
   d.rotas.forEach((r, i) => {
     if (filtroIdx !== null && filtroIdx !== i) return;
     const cor = CORES[i % CORES.length];
-    // Jitter visual pra paradas com coords idênticas dentro da MESMA rota
-    // (mesmo cliente, vários pedidos): cada parada extra no mesmo ponto é
-    // deslocada ~5m num padrão circular. Sem isso, Leaflet renderiza
-    // markers em cima uns dos outros e parece que sumiram.
     const coordsVistas = {};
-    r.paradas.forEach(p => {
-      todos.push([p.lat, p.lng]);
-      const sel = S.selecionadas.has(String(p.id));
-      const corBorda = sel ? '#dc2626' : cor;
-      const corTexto = sel ? '#dc2626' : cor;
-      const corFundo = sel ? '#fca5a5' : '#fff';
-      const chaveCoord = `${p.lat.toFixed(6)},${p.lng.toFixed(6)}`;
-      coordsVistas[chaveCoord] = (coordsVistas[chaveCoord] || 0) + 1;
-      const dupCount = coordsVistas[chaveCoord] - 1;
-      let latPlot = p.lat, lngPlot = p.lng;
-      if (dupCount > 0) {
-        const ang = (dupCount * 60) * Math.PI / 180;
-        const raio = 0.00005;  // ~5m
-        latPlot += raio * Math.cos(ang);
-        lngPlot += raio * Math.sin(ang);
+    let markersOk = 0, markersFail = 0;
+    r.paradas.forEach((p, paradaIdx) => {
+      try {
+        // Valida coords ANTES de criar marker (NaN/null quebram silencioso)
+        const lat0 = Number(p.lat), lng0 = Number(p.lng);
+        if (!Number.isFinite(lat0) || !Number.isFinite(lng0)) {
+          throw new Error(`coords invalidas: lat=${p.lat} lng=${p.lng}`);
+        }
+        todos.push([lat0, lng0]);
+        const sel = S.selecionadas.has(String(p.id));
+        const corBorda = sel ? '#dc2626' : cor;
+        const corTexto = sel ? '#dc2626' : cor;
+        const corFundo = sel ? '#fca5a5' : '#fff';
+        // Jitter visual pra paradas com coords idênticas/quase-idênticas
+        // (mesmo cliente, vários pedidos): cada parada extra no mesmo ponto
+        // (precisão de ~10m) é deslocada num padrão circular.
+        const chaveCoord = `${lat0.toFixed(4)},${lng0.toFixed(4)}`;
+        coordsVistas[chaveCoord] = (coordsVistas[chaveCoord] || 0) + 1;
+        const dupCount = coordsVistas[chaveCoord] - 1;
+        let latPlot = lat0, lngPlot = lng0;
+        if (dupCount > 0) {
+          const ang = (dupCount * 60) * Math.PI / 180;
+          const raio = 0.0001;  // ~10m
+          latPlot += raio * Math.cos(ang);
+          lngPlot += raio * Math.sin(ang);
+        }
+        const m = L.marker([latPlot, lngPlot], {
+          icon: L.divIcon({ className: '',
+            html: `<div class="marcador-num" style="border-color:${corBorda};color:${corTexto};background:${corFundo}">${p.ordem}</div>`,
+            iconSize: [22, 22], iconAnchor: [11, 11] })
+        });
+        if (S.modoSelecao) {
+          m.on('click', () => toggleSelecao(String(p.id)));
+        } else {
+          // Escapa HTML do nome/obs/id pra não quebrar template literal
+          const esc = (s) => String(s ?? '').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+          const partes = [
+            `<b>${esc(p.nome || p.id)}</b> · parada ${p.ordem}`,
+            p.nome ? `<br><span style="color:#888">${esc(p.id)}</span>` : '',
+            `<br>${esc(r.entregador?.nome || 'sem entregador')}`,
+            `<br>chega ~${hms(p.chegada_estimada_s)}`,
+            p.obs ? `<br><i>${esc(p.obs)}</i>` : '',
+          ];
+          m.bindPopup(partes.join(''));
+        }
+        m.addTo(camadaRotas);
+        markersOk++;
+      } catch (err) {
+        markersFail++;
+        const nome = (r.entregador?.nome) || `rota ${i}`;
+        console.error(`[desenharRotas] marker falhou em ${nome} parada #${paradaIdx} id=${p?.id}:`, err, p);
       }
-      const m = L.marker([latPlot, lngPlot], {
-        icon: L.divIcon({ className: '',
-          html: `<div class="marcador-num" style="border-color:${corBorda};color:${corTexto};background:${corFundo}">${p.ordem}</div>`,
-          iconSize: [22, 22], iconAnchor: [11, 11] })
-      });
-      if (S.modoSelecao) {
-        // No modo seleção, clique TOGGLE em vez de abrir popup
-        m.on('click', () => toggleSelecao(String(p.id)));
-      } else {
-        m.bindPopup(
-          `<b>${p.nome || p.id}</b> · parada ${p.ordem}` +
-          (p.nome ? `<br><span style="color:#888">${p.id}</span>` : '') +
-          `<br>${r.entregador?.nome || 'sem entregador'}` +
-          `<br>chega ~${hms(p.chegada_estimada_s)}${p.obs ? '<br><i>' + p.obs + '</i>' : ''}`);
-      }
-      m.addTo(camadaRotas);
     });
+    if (markersFail > 0) {
+      const nome = (r.entregador?.nome) || `rota ${i}`;
+      console.warn(`[desenharRotas] ${nome}: ${markersOk} markers OK, ${markersFail} falharam`);
+    }
     if (r.entregador && !r.candidata_lalamove) {
       todos.push([r.entregador.lat, r.entregador.lng]);
       L.marker([r.entregador.lat, r.entregador.lng], {
