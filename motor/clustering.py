@@ -263,6 +263,71 @@ def _tempo_min_estimado(cluster, cd):
     return tempo_deslocamento + tempo_servico
 
 
+def _mover_paradas_via_vizinho_mais_proximo(clusters, cd,
+                                              fator_km_acima_media: float = 1.5,
+                                              n_min_paradas: int = 10,
+                                              max_movimentos: int = 100):
+    """Pra clusters com km estimado > fator_km_acima_media × média, move
+    paradas cujo VIZINHO MAIS PRÓXIMO (parada de outro cluster) está mais
+    perto que qualquer parada do PRÓPRIO cluster.
+
+    Critério é "vizinho", não centróide — pega o caso reportado: Camila
+    89km e Leia 21km, com paradas da Camila tendo vizinhos da Leia a 500m
+    e vizinhos próprios a 5km. Move SEM exigir que reduza o tempo máximo
+    geral (que não acontece pq Camila está MUITO acima das outras —
+    qualquer destino vai aumentar). O importante é reduzir Camila.
+
+    Mínimo 10 paradas no cluster origem; sem máximo no destino (até max_paradas
+    geral, que vem como hard cap em outro lugar).
+    """
+    if not clusters or len(clusters) < 2:
+        return clusters
+
+    for _ in range(max_movimentos):
+        kms = [_km_tsp_greedy(c, cd) for c in clusters]
+        media = sum(kms) / len(kms) if kms else 0
+        if media <= 0:
+            break
+
+        i_grande = max(range(len(clusters)), key=lambda i: kms[i])
+        if kms[i_grande] < media * fator_km_acima_media:
+            break
+        cluster_g = clusters[i_grande]
+        if len(cluster_g) <= n_min_paradas:
+            break
+
+        melhor = None
+        melhor_ganho = 0
+        for p_idx, p in enumerate(cluster_g):
+            # Distância ao vizinho mais próximo NO PRÓPRIO cluster
+            d_propria = min(
+                (_haversine_km(p.lat, p.lng, o.lat, o.lng)
+                 for o_idx, o in enumerate(cluster_g) if o_idx != p_idx),
+                default=float('inf'),
+            )
+            # Distância ao vizinho mais próximo em cada OUTRO cluster
+            for j, cj in enumerate(clusters):
+                if j == i_grande or not cj:
+                    continue
+                d_outro = min(
+                    _haversine_km(p.lat, p.lng, o.lat, o.lng) for o in cj
+                )
+                if d_outro >= d_propria:
+                    continue
+                ganho = d_propria - d_outro
+                if ganho > melhor_ganho:
+                    melhor_ganho = ganho
+                    melhor = (p_idx, j)
+
+        if melhor is None:
+            break
+        p_idx, j_dest = melhor
+        p = cluster_g.pop(p_idx)
+        clusters[j_dest].append(p)
+
+    return clusters
+
+
 def _balancear_por_tempo(clusters, cd,
                           dif_max_min: float = 30.0,
                           n_min_paradas: int = 10,
@@ -633,15 +698,17 @@ def kmeans_balanced(entregas, cd, m: int, *,
         if rebalancear_km:
             clusters = _rebalancear_por_km(clusters, cd)
         # Move paradas isoladas (MUITO mais perto do centróide de outro
-        # cluster) — caso Camila com paradas atravessando a cidade.
+        # cluster) — caso geral.
         clusters = _mover_paradas_isoladas(clusters, cd)
-        # Balanceia por TEMPO (km estimado + serviço por parada): rotas
-        # com tempo > média+30min perdem paradas pras curtas que estão
-        # no caminho da parada. Permite span de paradas maior (até 8)
-        # em troca de tempo equilibrado entre entregadores.
+        # MAIS AGRESSIVO: clusters com km muito acima da média perdem
+        # paradas cujos VIZINHOS estão em outro cluster (não exige reduzir
+        # tempo máximo geral). Caso Camila 89km vs Leia 21km.
+        clusters = _mover_paradas_via_vizinho_mais_proximo(clusters, cd)
+        # Balanceia por TEMPO (km × 1.4 / 30km/h + paradas × 10min): rotas
+        # com tempo > média+30min trocam (se reduz tempo máximo).
         clusters = _balancear_por_tempo(clusters, cd)
-        # Rotas com > 50km absolutos (raríssimo após balanço por tempo)
-        # perdem paradas até cair < 50km ou ficar com 10 paradas.
+        # Salvaguarda: rotas com > 50km absolutos perdem paradas até < 50km
+        # ou ficar com 10 mínimo. Raríssimo de disparar após os de cima.
         clusters = _reduzir_clusters_longos(clusters, cd)
         # Anti-entrelaçamento por vizinhança: pares próximos em clusters
         # diferentes (raio 800m) trocam.
