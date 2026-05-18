@@ -73,6 +73,48 @@ def _separar_sobras_capacidade(entregas, cd, capacidade):
     return resto, lalamove
 
 
+# Entregas a menos de RAIO_CD_M do CD são tratadas como "Entregas CD" —
+# não entram nas rotas dos entregadores (ninguém precisa "ir lá").
+RAIO_CD_M = 100  # 100m do CD
+
+
+def _separar_entregas_cd(entregas, cd):
+    """Separa entregas que estão no MESMO endereço do CD (dentro de RAIO_CD_M).
+    Retorna (resto, entregas_no_cd). As entregas_no_cd viram uma rota especial
+    'Entregas CD' colocada por último — alguém do CD entrega na hora."""
+    no_cd = []
+    resto = []
+    for e in entregas:
+        d_km = _haversine_km(cd.lat, cd.lng, e.lat, e.lng)
+        if d_km * 1000 <= RAIO_CD_M:
+            no_cd.append(e)
+        else:
+            resto.append(e)
+    return resto, no_cd
+
+
+def _rota_entregas_cd(entregas, cd) -> Rota | None:
+    """Cria a rota especial 'Entregas CD' (entregador virtual). Sem TSP:
+    a ordem é só na sequência recebida. Distância/duração = 0 (entregador
+    pega no balcão). chegada_estimada_s = 0 (na hora)."""
+    if not entregas:
+        return None
+    paradas = [
+        Parada(entrega=e, ordem=i + 1, chegada_estimada_s=0)
+        for i, e in enumerate(entregas)
+    ]
+    return Rota(
+        entregador=Entregador(
+            id="CD_ENTREGAS", nome="Entregas CD",
+            lat=cd.lat, lng=cd.lng,
+        ),
+        paradas=paradas,
+        distancia_m=0,
+        duracao_s=0,
+        candidata_lalamove=False,
+    )
+
+
 def _agrupar_lalamoves(entregas, cd, max_por_rota=MAX_PARADAS_LALAMOVE):
     """Agrupa Lalamoves em rotas de até max_por_rota por proximidade."""
     if not entregas:
@@ -256,6 +298,13 @@ def roteirizar(
     if m == 0:
         raise ValueError("nenhum entregador disponível")
 
+    # PASSO 0: separa "Entregas CD" — entregas no MESMO endereço do CD
+    # não entram nas rotas dos entregadores (alguém do CD entrega na hora).
+    entregas, entregas_cd = _separar_entregas_cd(entregas, cd)
+    if entregas_cd:
+        log.info("Entregas CD: %d entregas no endereço do CD (rota separada)",
+                 len(entregas_cd))
+
     # PASSO 1: separa Lalamove pelo excedente de capacidade.
     capacidade = m * max_paradas
     if gerar_lalamove:
@@ -336,5 +385,11 @@ def roteirizar(
 
     if gerar_lalamove:
         rotas.extend(_agrupar_lalamoves(lalamove_pre + droppadas, cd))
+
+    # PASSO 5: "Entregas CD" como ÚLTIMA rota (depois de tudo, inclusive
+    # Lalamoves) — entregador do CD entrega na hora, então é independente.
+    rota_cd = _rota_entregas_cd(entregas_cd, cd)
+    if rota_cd is not None:
+        rotas.append(rota_cd)
 
     return rotas

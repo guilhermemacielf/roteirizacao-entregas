@@ -138,6 +138,73 @@ def _diametro_km(cluster, cd):
     return d_max
 
 
+def _reduzir_entrelacamento(clusters, cd,
+                             distancia_max_m: float = 500,
+                             max_iter: int = 50):
+    """Pra cada par (e1, e2) em clusters diferentes mas geograficamente
+    próximos (< distancia_max_m), TROCA-OS se isso reduz a soma de
+    distâncias dos pontos aos respectivos centróides. Mantém tamanhos
+    de cluster (swap simétrico). Greedy: cada iteração faz a MELHOR
+    troca; para quando nenhuma melhora ou max_iter atingido.
+
+    Resolve o caso reportado: Tamara/Camila com entregas próximas
+    intercaladas em clusters diferentes. K-means decide pela menor
+    distância ao centróide, mas pontos na fronteira de Voronoi acabam
+    em clusters diferentes mesmo estando lado a lado.
+    """
+    if not clusters or len(clusters) < 2:
+        return clusters
+
+    for _ in range(max_iter):
+        # Recalcula centróides
+        centroides = []
+        for c in clusters:
+            if c:
+                lat = sum(e.lat for e in c) / len(c)
+                lng = sum(e.lng for e in c) / len(c)
+                centroides.append((lat, lng))
+            else:
+                centroides.append(None)
+
+        melhor_swap = None
+        melhor_ganho = 0.0
+        for i in range(len(clusters)):
+            ci, cent_i = clusters[i], centroides[i]
+            if cent_i is None or not ci:
+                continue
+            for j in range(i + 1, len(clusters)):
+                cj, cent_j = clusters[j], centroides[j]
+                if cent_j is None or not cj:
+                    continue
+                for e1_idx, e1 in enumerate(ci):
+                    for e2_idx, e2 in enumerate(cj):
+                        # Filtro grosso por distância pra evitar custo desnecessário
+                        d_e1_e2_km = _haversine_km(e1.lat, e1.lng, e2.lat, e2.lng)
+                        if d_e1_e2_km * 1000 > distancia_max_m:
+                            continue
+                        # Custo atual (cada um no próprio cluster)
+                        atual = (
+                            _haversine_km(e1.lat, e1.lng, cent_i[0], cent_i[1])
+                            + _haversine_km(e2.lat, e2.lng, cent_j[0], cent_j[1])
+                        )
+                        # Custo se trocar
+                        swap = (
+                            _haversine_km(e1.lat, e1.lng, cent_j[0], cent_j[1])
+                            + _haversine_km(e2.lat, e2.lng, cent_i[0], cent_i[1])
+                        )
+                        ganho = atual - swap
+                        if ganho > melhor_ganho:
+                            melhor_ganho = ganho
+                            melhor_swap = (i, e1_idx, j, e2_idx)
+
+        if melhor_swap is None:
+            break
+        i, e1_idx, j, e2_idx = melhor_swap
+        clusters[i][e1_idx], clusters[j][e2_idx] = clusters[j][e2_idx], clusters[i][e1_idx]
+
+    return clusters
+
+
 def _rebalancear_por_km(clusters, cd,
                         fator_acima_media: float = 1.2,
                         span_paradas_max: int = 6,
@@ -300,6 +367,10 @@ def kmeans_balanced(entregas, cd, m: int, *,
     ]
     if rebalancear_km:
         clusters = _rebalancear_por_km(clusters, cd)
+    # Sempre roda anti-entrelaçamento: troca pares próximos em clusters
+    # diferentes que melhorem dist intra-cluster. Resolve Tamara/Camila
+    # com entregas vizinhas em rotas separadas.
+    clusters = _reduzir_entrelacamento(clusters, cd)
     return clusters
 
 

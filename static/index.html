@@ -169,9 +169,10 @@
 <!-- Painel flutuante de seleção (modo Selecionar paradas) -->
 <div id="painel-selecao" style="display:none;position:fixed;bottom:20px;right:20px;background:#fff;
      border:2px solid #dc2626;border-radius:10px;padding:12px 14px;box-shadow:0 4px 16px rgba(0,0,0,.15);
-     z-index:9998;min-width:260px;max-width:340px;font-size:13px">
+     z-index:9998;width:340px;max-height:70vh;font-size:13px;display:flex;flex-direction:column">
   <b style="color:#dc2626" id="sel-titulo">0 entregas selecionadas</b>
   <div style="font-size:11px;color:#666;margin:4px 0 8px">clique em paradas no mapa pra marcar/desmarcar</div>
+  <div id="sel-lista" style="overflow-y:auto;flex:1;margin-bottom:8px;font-size:12px"></div>
   <div class="campo">
     <label style="font-size:12px">Mover pra rota:</label>
     <select id="sel-destino" style="width:100%;padding:6px;border:1px solid #ddd;border-radius:6px;font-size:12px"></select>
@@ -814,8 +815,10 @@ function toggleRota(i) {
 }
 
 // ── Mapa: rotas ───────────────────────────────────────────
-function desenharRotas(filtroIdx = null) {
+function desenharRotas(filtroIdx = null, preservarZoom = false) {
   // filtroIdx=null → desenha todas; filtroIdx=i → só a rota i (CD + paradas + casa).
+  // preservarZoom=true → não chama fitBounds (mantém zoom/centro atuais);
+  //   usado quando clica em parada no modo seleção (re-render sem mudar view).
   camadaEntrada.clearLayers();
   camadaRotas.clearLayers();
   const d = S.resultado;
@@ -902,7 +905,7 @@ function desenharRotas(filtroIdx = null) {
     L.polyline(linha, { color: cor, weight: 4, opacity: .85 })
       .addTo(camadaRotas);
   });
-  if (todos.length > 1) map.fitBounds(todos, { padding: [40, 40] });
+  if (!preservarZoom && todos.length > 1) map.fitBounds(todos, { padding: [40, 40] });
 }
 
 function focarRota(i) {
@@ -938,13 +941,14 @@ function toggleSelecao(id) {
   if (S.selecionadas.has(id)) S.selecionadas.delete(id);
   else S.selecionadas.add(id);
   atualizarPainelSelecao();
-  desenharRotas(S.rotaFoco);
+  // preservarZoom=true: clicar em parada NÃO deve dar zoom out do mapa
+  desenharRotas(S.rotaFoco, true);
 }
 
 function limparSelecao() {
   S.selecionadas.clear();
   atualizarPainelSelecao();
-  desenharRotas(S.rotaFoco);
+  desenharRotas(S.rotaFoco, true);
 }
 
 function atualizarPainelSelecao() {
@@ -953,6 +957,33 @@ function atualizarPainelSelecao() {
   if (tit) tit.textContent = `${n} ${n === 1 ? 'entrega selecionada' : 'entregas selecionadas'}`;
   const btn = document.getElementById('btn-executar-mover');
   if (btn) btn.disabled = n === 0;
+  const lista = document.getElementById('sel-lista');
+  if (!lista) return;
+  if (n === 0) {
+    lista.innerHTML = '<div style="color:#888;font-size:11px;text-align:center;padding:20px 0">Nenhuma parada selecionada</div>';
+    return;
+  }
+  // Pra cada id selecionado, busca a parada no resultado e o nome do entregador
+  const esc = (s) => String(s ?? '').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+  const itens = [];
+  for (const id of S.selecionadas) {
+    let achou = null;
+    for (const rota of S.resultado?.rotas || []) {
+      const p = (rota.paradas || []).find(pp => String(pp.id) === id);
+      if (p) { achou = { parada: p, entregador: rota.entregador?.nome || '—' }; break; }
+    }
+    if (!achou) continue;
+    const p = achou.parada;
+    const sub = [p.bairro, p.cidade && p.cidade !== p.bairro ? p.cidade : ''].filter(Boolean).join(' · ');
+    itens.push(`<div style="padding:5px 6px;border-bottom:1px dashed #eee;display:flex;gap:6px;align-items:center">
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(p.nome || p.id)}</div>
+        <div style="font-size:10px;color:#888">${esc(sub || p.id)} · de <b>${esc(achou.entregador)}</b></div>
+      </div>
+      <button class="btn btn-sm" style="padding:2px 6px;font-size:11px" onclick="toggleSelecao('${esc(id).replace(/'/g, "\\'")}')">×</button>
+    </div>`);
+  }
+  lista.innerHTML = itens.join('');
 }
 
 function popularDestinoSelect() {
