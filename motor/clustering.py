@@ -245,6 +245,107 @@ def _km_tsp_greedy(entregas, cd):
     return km
 
 
+# Constantes pra estimativa de TEMPO (não usa OSRM — heurística rápida)
+_FATOR_RUAS_VS_LINHA_RETA = 1.4  # km real ≈ haversine × 1.4
+_KMH_URBANO_CLUSTER = 30.0       # velocidade média
+_MIN_SERVICO_POR_PARADA = 10.0   # min parado em cada entrega
+
+
+def _tempo_min_estimado(cluster, cd):
+    """Estimativa rápida de minutos totais da rota (deslocamento + serviço).
+    Sem chamar OSRM — usa haversine × fator pra aproximar km real. Boa
+    o suficiente pra COMPARAR clusters entre si."""
+    if not cluster:
+        return 0.0
+    km = _km_tsp_greedy(cluster, cd) * _FATOR_RUAS_VS_LINHA_RETA
+    tempo_deslocamento = km / _KMH_URBANO_CLUSTER * 60
+    tempo_servico = len(cluster) * _MIN_SERVICO_POR_PARADA
+    return tempo_deslocamento + tempo_servico
+
+
+def _balancear_por_tempo(clusters, cd,
+                          dif_max_min: float = 30.0,
+                          n_min_paradas: int = 10,
+                          max_movimentos: int = 100):
+    """Balanceia clusters por TEMPO ESTIMADO em vez de só paradas.
+    Caso real: Camila com 4h36 (14 paradas, atravessa cidade) e Leia
+    com 3h11 (14 paradas, concentrada). Apenas por contagem, parecem
+    iguais. Por tempo, Camila tá 1h25 mais carregada.
+
+    Algoritmo:
+      1. Identifica par (cluster_mais_carregado, cluster_menos_carregado)
+      2. Se diferença > dif_max_min E maior tem > n_min_paradas:
+         - Pega a parada do maior cujo move pra menor reduz mais a
+           diferença DE TEMPO (não só de distância)
+         - Move SE deixa o maior ainda com >= n_min_paradas
+      3. Repete até diferença cair OU não conseguir mais mover.
+
+    Aceita span de paradas maior (até 8) em troca de tempo equilibrado —
+    é o que o usuário pediu: 18 paradas curtas vs 10 paradas longas é OK.
+    """
+    if not clusters or len(clusters) < 2:
+        return clusters
+
+    for _ in range(max_movimentos):
+        # Tempo de cada cluster + centróides
+        tempos = []
+        centroides = []
+        for c in clusters:
+            tempos.append(_tempo_min_estimado(c, cd))
+            if c:
+                lat = sum(e.lat for e in c) / len(c)
+                lng = sum(e.lng for e in c) / len(c)
+                centroides.append((lat, lng))
+            else:
+                centroides.append(None)
+
+        # Identifica maior/menor
+        i_max = max(range(len(clusters)), key=lambda i: tempos[i])
+        i_min = min(range(len(clusters)),
+                    key=lambda i: tempos[i] if clusters[i] else float('inf'))
+        if i_max == i_min:
+            break
+        dif = tempos[i_max] - tempos[i_min]
+        if dif <= dif_max_min:
+            break
+        if len(clusters[i_max]) <= n_min_paradas:
+            break  # já no mínimo
+        if centroides[i_min] is None:
+            break
+
+        # Pra cada parada do maior, simula tempo APÓS mover e calcula ganho
+        # = redução de tempo do maior + aumento de tempo do menor (queremos
+        # reduzir MAX(tempos)).
+        cluster_max = clusters[i_max]
+        cluster_min = clusters[i_min]
+        t_max_atual = tempos[i_max]
+        t_min_atual = tempos[i_min]
+        melhor_idx, melhor_ganho = -1, 0
+        for p_idx, p in enumerate(cluster_max):
+            # Sem essa parada: re-estima
+            sem = [e for k, e in enumerate(cluster_max) if k != p_idx]
+            t_max_novo = _tempo_min_estimado(sem, cd)
+            # Adicionando ao menor
+            com = list(cluster_min) + [p]
+            t_min_novo = _tempo_min_estimado(com, cd)
+            # Novo max é o pior dos 2 (já que outros clusters não mudaram)
+            outros_tempos = [tempos[k] for k in range(len(clusters))
+                             if k not in (i_max, i_min)]
+            t_max_geral_atual = max([t_max_atual] + outros_tempos)
+            t_max_geral_novo = max([t_max_novo, t_min_novo] + outros_tempos)
+            ganho = t_max_geral_atual - t_max_geral_novo
+            if ganho > melhor_ganho:
+                melhor_ganho = ganho
+                melhor_idx = p_idx
+
+        if melhor_idx < 0:
+            break  # nenhuma parada reduz o tempo máximo geral
+        p = cluster_max.pop(melhor_idx)
+        cluster_min.append(p)
+
+    return clusters
+
+
 def _reduzir_clusters_longos(clusters, cd,
                               km_max: float = 50.0,
                               n_min_paradas: int = 10):
@@ -528,19 +629,23 @@ def kmeans_balanced(entregas, cd, m: int, *,
     # Pós-processos em loop até estabilizar (cada um pode abrir espaço
     # pro próximo). Tipicamente 2-3 iterações resolvem.
     for passada in range(5):
-        snapshot = [list(c) for c in clusters]  # cópia rasa pra comparar
+        snapshot = [list(c) for c in clusters]
         if rebalancear_km:
             clusters = _rebalancear_por_km(clusters, cd)
         # Move paradas isoladas (MUITO mais perto do centróide de outro
         # cluster) — caso Camila com paradas atravessando a cidade.
         clusters = _mover_paradas_isoladas(clusters, cd)
-        # Rotas com > 50km perdem paradas externas até cair abaixo de
-        # 50km OU atingir 10 paradas mínimo.
+        # Balanceia por TEMPO (km estimado + serviço por parada): rotas
+        # com tempo > média+30min perdem paradas pras curtas que estão
+        # no caminho da parada. Permite span de paradas maior (até 8)
+        # em troca de tempo equilibrado entre entregadores.
+        clusters = _balancear_por_tempo(clusters, cd)
+        # Rotas com > 50km absolutos (raríssimo após balanço por tempo)
+        # perdem paradas até cair < 50km ou ficar com 10 paradas.
         clusters = _reduzir_clusters_longos(clusters, cd)
         # Anti-entrelaçamento por vizinhança: pares próximos em clusters
         # diferentes (raio 800m) trocam.
         clusters = _reduzir_entrelacamento(clusters, cd)
-        # Convergiu se nenhum cluster mudou de composição
         sets_antes = [set(id(e) for e in c) for c in snapshot]
         sets_depois = [set(id(e) for e in c) for c in clusters]
         if sets_antes == sets_depois:
