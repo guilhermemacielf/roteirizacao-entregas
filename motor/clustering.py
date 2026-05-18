@@ -226,10 +226,71 @@ def _reduzir_entrelacamento(clusters, cd,
     return clusters
 
 
+def _mover_paradas_isoladas(clusters, cd,
+                             fator_distancia: float = 1.5,
+                             max_movimentos: int = 100):
+    """Pra cada parada, se a distância ao centróide do PRÓPRIO cluster é
+    `fator_distancia`× maior que a distância ao centróide de OUTRO cluster,
+    move pra esse outro. Sem trocar (pode desbalancear levemente). Greedy:
+    aplica o swap mais vantajoso em cada iter.
+
+    Esse é o caso "Camila" reportado: parada 1-5 estão muito mais perto
+    do centróide da Ana Carolina/Tamara, mas K-means atribuiu à Camila
+    e o rebalance por diâmetro/span não pegou. Aqui movemos diretamente
+    quando há cluster MUITO MAIS próximo.
+    """
+    if not clusters or len(clusters) < 2:
+        return clusters
+
+    for _ in range(max_movimentos):
+        # Calcula centróides atuais
+        centroides = []
+        for c in clusters:
+            if c:
+                lat = sum(e.lat for e in c) / len(c)
+                lng = sum(e.lng for e in c) / len(c)
+                centroides.append((lat, lng))
+            else:
+                centroides.append(None)
+
+        melhor = None
+        melhor_ganho = 0
+        for i, ci in enumerate(clusters):
+            ci_lat, ci_lng = (centroides[i] or (cd.lat, cd.lng))
+            for idx, e in enumerate(ci):
+                d_propria = _haversine_km(e.lat, e.lng, ci_lat, ci_lng)
+                # Encontra cluster mais próximo
+                melhor_j, d_melhor_j = -1, float('inf')
+                for j, cj in enumerate(clusters):
+                    if j == i or centroides[j] is None:
+                        continue
+                    d = _haversine_km(e.lat, e.lng, centroides[j][0], centroides[j][1])
+                    if d < d_melhor_j:
+                        melhor_j, d_melhor_j = j, d
+                if melhor_j < 0:
+                    continue
+                # Só move se própria distância é fator_distancia× MAIOR
+                # que a do outro cluster
+                if d_propria < d_melhor_j * fator_distancia:
+                    continue
+                ganho = d_propria - d_melhor_j
+                if ganho > melhor_ganho:
+                    melhor_ganho = ganho
+                    melhor = (i, idx, melhor_j)
+
+        if melhor is None:
+            break
+        i, idx, j = melhor
+        e = clusters[i].pop(idx)
+        clusters[j].append(e)
+
+    return clusters
+
+
 def _rebalancear_por_km(clusters, cd,
-                        fator_acima_media: float = 1.2,
-                        span_paradas_max: int = 6,
-                        max_movimentos: int = 60):
+                        fator_acima_media: float = 1.15,
+                        span_paradas_max: int = 8,
+                        max_movimentos: int = 100):
     """Pós-processamento: rota MUITO mais longa em km que a média perde
     suas paradas mais externas (mais distantes do centróide) pra rotas
     com menos km que aceitem (mais próximas da casa daquela parada).
@@ -388,6 +449,10 @@ def kmeans_balanced(entregas, cd, m: int, *,
     ]
     if rebalancear_km:
         clusters = _rebalancear_por_km(clusters, cd)
+    # Move paradas isoladas (que estão MUITO mais perto do centróide de
+    # outro cluster) — pega o caso Camila com paradas atravessando a
+    # cidade que poderiam estar em rotas vizinhas.
+    clusters = _mover_paradas_isoladas(clusters, cd)
     # Sempre roda anti-entrelaçamento: troca pares próximos em clusters
     # diferentes que melhorem dist intra-cluster. Resolve Tamara/Camila
     # com entregas vizinhas em rotas separadas.
