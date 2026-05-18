@@ -25,7 +25,7 @@ from motor.roteirizar import roteirizar, _tsp_cluster, _agrupar_lalamoves
 from motor.matriz import MatrizError, matriz as osrm_matriz
 from motor.geocode import (GeocodeError, carregar_cache, salvar_cache,
                             _normalizar, geocodificar,
-                            purgar_centroides_genericos)
+                            purgar_centroides_genericos, limpar_falhas)
 from motor.obs import extrair_janela
 from motor.sheets_write import escrever_rotas, SheetsWriteError
 from motor.entregadores_sheet import sincronizar_entregadores, carregar_valores
@@ -192,6 +192,17 @@ def api_geocode_manual():
         "janela_inicio": ini,
         "janela_fim":    fim,
     })
+
+
+@app.route("/api/geocode/limpar-falhas", methods=["POST"])
+def api_geocode_limpar_falhas():
+    """Remove do cache as entradas que falharam (valor=None). Útil quando
+    adiciona/melhora provedores (ex: ativou Google Maps Geocoding) e
+    quer forçar re-tentativa dos endereços que tinham falhado antes.
+    Sem isso, falha fica cacheada e nem tenta os novos provedores.
+    Resposta: {"removidas": N}"""
+    n = limpar_falhas()
+    return jsonify({"removidas": n})
 
 
 @app.route("/api/geocode/purgar-genericos", methods=["POST"])
