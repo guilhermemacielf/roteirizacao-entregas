@@ -324,7 +324,9 @@ def roteirizar(
 
     # PASSO 2: clustering geográfico via K-means equilibrado (compacto,
     # balanceado, não corta bairros como o sweep angular fazia).
-    clusters = kmeans_balanced(entregas, cd, m_efetivo)
+    clusters = kmeans_balanced(entregas, cd, m_efetivo,
+                                min_paradas_hard=min_paradas,
+                                max_paradas_hard=max_paradas)
     log.info("K-means balanced: %d clusters, tamanhos=%s",
              m_efetivo, [len(c) for c in clusters])
 

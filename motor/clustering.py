@@ -266,6 +266,7 @@ def _tempo_min_estimado(cluster, cd):
 def _mover_paradas_via_vizinho_mais_proximo(clusters, cd,
                                               fator_km_acima_media: float = 1.5,
                                               n_min_paradas: int = 10,
+                                              n_max_paradas: int = 18,
                                               max_movimentos: int = 100):
     """Pra clusters com km estimado > fator_km_acima_media × média, move
     paradas cujo VIZINHO MAIS PRÓXIMO (parada de outro cluster) está mais
@@ -309,6 +310,9 @@ def _mover_paradas_via_vizinho_mais_proximo(clusters, cd,
             for j, cj in enumerate(clusters):
                 if j == i_grande or not cj:
                     continue
+                # HARD CAP: cluster destino não pode passar de n_max_paradas
+                if len(cj) >= n_max_paradas:
+                    continue
                 d_outro = min(
                     _haversine_km(p.lat, p.lng, o.lat, o.lng) for o in cj
                 )
@@ -331,6 +335,7 @@ def _mover_paradas_via_vizinho_mais_proximo(clusters, cd,
 def _balancear_por_tempo(clusters, cd,
                           dif_max_min: float = 30.0,
                           n_min_paradas: int = 10,
+                          n_max_paradas: int = 18,
                           max_movimentos: int = 100):
     """Balanceia clusters por TEMPO ESTIMADO em vez de só paradas.
     Caso real: Camila com 4h36 (14 paradas, atravessa cidade) e Leia
@@ -377,6 +382,9 @@ def _balancear_por_tempo(clusters, cd,
             break  # já no mínimo
         if centroides[i_min] is None:
             break
+        # HARD CAP: cluster destino não pode passar de n_max_paradas
+        if len(clusters[i_min]) >= n_max_paradas:
+            break
 
         # Pra cada parada do maior, simula tempo APÓS mover e calcula ganho
         # = redução de tempo do maior + aumento de tempo do menor (queremos
@@ -413,7 +421,8 @@ def _balancear_por_tempo(clusters, cd,
 
 def _reduzir_clusters_longos(clusters, cd,
                               km_max: float = 50.0,
-                              n_min_paradas: int = 10):
+                              n_min_paradas: int = 10,
+                              n_max_paradas: int = 18):
     """Pra cada cluster com km estimado > km_max, move suas paradas mais
     isoladas pra outros clusters mais próximos delas. Para quando:
       - o cluster cai abaixo de km_max, OU
@@ -454,6 +463,8 @@ def _reduzir_clusters_longos(clusters, cd,
                 for j in range(len(clusters)):
                     if j == ci or centroides[j] is None:
                         continue
+                    if len(clusters[j]) >= n_max_paradas:
+                        continue
                     d_outro = _haversine_km(p.lat, p.lng, centroides[j][0], centroides[j][1])
                     if d_outro >= d_propria:
                         continue
@@ -472,6 +483,7 @@ def _reduzir_clusters_longos(clusters, cd,
 
 def _mover_paradas_isoladas(clusters, cd,
                              fator_distancia: float = 1.5,
+                             n_max_paradas: int = 18,
                              max_movimentos: int = 100):
     """Pra cada parada, se a distância ao centróide do PRÓPRIO cluster é
     `fator_distancia`× maior que a distância ao centróide de OUTRO cluster,
@@ -503,10 +515,12 @@ def _mover_paradas_isoladas(clusters, cd,
             ci_lat, ci_lng = (centroides[i] or (cd.lat, cd.lng))
             for idx, e in enumerate(ci):
                 d_propria = _haversine_km(e.lat, e.lng, ci_lat, ci_lng)
-                # Encontra cluster mais próximo
+                # Encontra cluster mais próximo (respeita cap máximo no destino)
                 melhor_j, d_melhor_j = -1, float('inf')
                 for j, cj in enumerate(clusters):
                     if j == i or centroides[j] is None:
+                        continue
+                    if len(cj) >= n_max_paradas:
                         continue
                     d = _haversine_km(e.lat, e.lng, centroides[j][0], centroides[j][1])
                     if d < d_melhor_j:
@@ -618,7 +632,9 @@ def _rebalancear_por_km(clusters, cd,
 def kmeans_balanced(entregas, cd, m: int, *,
                      max_iter: int = 30,
                      peso_angular: float = 0.1,
-                     rebalancear_km: bool = True) -> list[list]:
+                     rebalancear_km: bool = True,
+                     min_paradas_hard: int = 10,
+                     max_paradas_hard: int = 18) -> list[list]:
     """K-means com tamanho-alvo fixo + init setorial + penalty angular +
     rebalanceamento opcional por km (move paradas externas de rotas
     gigantes pra rotas concentradas).
@@ -692,26 +708,19 @@ def kmeans_balanced(entregas, cd, m: int, *,
         for j in range(m)
     ]
     # Pós-processos em loop até estabilizar (cada um pode abrir espaço
-    # pro próximo). Tipicamente 2-3 iterações resolvem.
+    # pro próximo). Todos respeitam hard cap min/max paradas.
+    nmin, nmax = min_paradas_hard, max_paradas_hard
     for passada in range(5):
         snapshot = [list(c) for c in clusters]
         if rebalancear_km:
             clusters = _rebalancear_por_km(clusters, cd)
-        # Move paradas isoladas (MUITO mais perto do centróide de outro
-        # cluster) — caso geral.
-        clusters = _mover_paradas_isoladas(clusters, cd)
-        # MAIS AGRESSIVO: clusters com km muito acima da média perdem
-        # paradas cujos VIZINHOS estão em outro cluster (não exige reduzir
-        # tempo máximo geral). Caso Camila 89km vs Leia 21km.
-        clusters = _mover_paradas_via_vizinho_mais_proximo(clusters, cd)
-        # Balanceia por TEMPO (km × 1.4 / 30km/h + paradas × 10min): rotas
-        # com tempo > média+30min trocam (se reduz tempo máximo).
-        clusters = _balancear_por_tempo(clusters, cd)
-        # Salvaguarda: rotas com > 50km absolutos perdem paradas até < 50km
-        # ou ficar com 10 mínimo. Raríssimo de disparar após os de cima.
-        clusters = _reduzir_clusters_longos(clusters, cd)
-        # Anti-entrelaçamento por vizinhança: pares próximos em clusters
-        # diferentes (raio 800m) trocam.
+        clusters = _mover_paradas_isoladas(clusters, cd, n_max_paradas=nmax)
+        clusters = _mover_paradas_via_vizinho_mais_proximo(
+            clusters, cd, n_min_paradas=nmin, n_max_paradas=nmax)
+        clusters = _balancear_por_tempo(
+            clusters, cd, n_min_paradas=nmin, n_max_paradas=nmax)
+        clusters = _reduzir_clusters_longos(
+            clusters, cd, n_min_paradas=nmin, n_max_paradas=nmax)
         clusters = _reduzir_entrelacamento(clusters, cd)
         sets_antes = [set(id(e) for e in c) for c in snapshot]
         sets_depois = [set(id(e) for e in c) for c in clusters]
