@@ -52,7 +52,13 @@ else:
 
 @app.route("/")
 def index():
-    return app.send_static_file("index.html")
+    resp = app.make_response(app.send_static_file("index.html"))
+    # Desabilita cache do browser — desenvolvimento ativo, mudanças no HTML/JS
+    # devem aparecer ao recarregar sem precisar de hard refresh.
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
 
 
 @app.route("/api/config")
