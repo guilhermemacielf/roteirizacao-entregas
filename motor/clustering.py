@@ -139,68 +139,89 @@ def _diametro_km(cluster, cd):
 
 
 def _reduzir_entrelacamento(clusters, cd,
-                             distancia_max_m: float = 500,
-                             max_iter: int = 50):
-    """Pra cada par (e1, e2) em clusters diferentes mas geograficamente
-    próximos (< distancia_max_m), TROCA-OS se isso reduz a soma de
-    distâncias dos pontos aos respectivos centróides. Mantém tamanhos
-    de cluster (swap simétrico). Greedy: cada iteração faz a MELHOR
-    troca; para quando nenhuma melhora ou max_iter atingido.
+                             raio_vizinhanca_m: float = 400,
+                             max_iter: int = 100):
+    """Anti-entrelaçamento por VIZINHANÇA (não por centróide).
 
-    Resolve o caso reportado: Tamara/Camila com entregas próximas
-    intercaladas em clusters diferentes. K-means decide pela menor
-    distância ao centróide, mas pontos na fronteira de Voronoi acabam
-    em clusters diferentes mesmo estando lado a lado.
+    Pra cada entrega, conta quantos vizinhos < raio_vizinhanca_m estão em
+    cada cluster. Se a MAIORIA dos vizinhos próximos está em outro cluster
+    (não no atual), tenta swap com alguém desse outro cluster cujos
+    vizinhos majoritariamente estão no cluster atual da nossa entrega.
+    Mantém tamanhos (swap simétrico).
+
+    Versão anterior (por centróide) não disparava swap pra pontos
+    equidistantes dos 2 centróides — exatamente o caso de entregas na
+    fronteira Tamara/Camila. Por vizinhança, esses pares são detectados
+    porque o "ser vizinho de quem" importa mais que "estar perto do quê".
     """
     if not clusters or len(clusters) < 2:
         return clusters
 
-    for _ in range(max_iter):
-        # Recalcula centróides
-        centroides = []
-        for c in clusters:
-            if c:
-                lat = sum(e.lat for e in c) / len(c)
-                lng = sum(e.lng for e in c) / len(c)
-                centroides.append((lat, lng))
-            else:
-                centroides.append(None)
+    raio_km = raio_vizinhanca_m / 1000.0
 
-        melhor_swap = None
-        melhor_ganho = 0.0
-        for i in range(len(clusters)):
-            ci, cent_i = clusters[i], centroides[i]
-            if cent_i is None or not ci:
-                continue
-            for j in range(i + 1, len(clusters)):
-                cj, cent_j = clusters[j], centroides[j]
-                if cent_j is None or not cj:
+    # Mapa: pra cada entrega (id memória), seu cluster e índice no cluster.
+    # Reconstruído a cada iteração porque swaps mudam.
+    def montar_idx():
+        idx = {}
+        for ci, cl in enumerate(clusters):
+            for ei, e in enumerate(cl):
+                idx[id(e)] = (ci, ei)
+        return idx
+
+    def vizinhos_por_cluster(e, idx_self):
+        """Counter dos clusters dos vizinhos de e (excluindo a própria e)."""
+        from collections import Counter
+        c = Counter()
+        for cl_idx, cl in enumerate(clusters):
+            for outra in cl:
+                if outra is e:
                     continue
-                for e1_idx, e1 in enumerate(ci):
-                    for e2_idx, e2 in enumerate(cj):
-                        # Filtro grosso por distância pra evitar custo desnecessário
-                        d_e1_e2_km = _haversine_km(e1.lat, e1.lng, e2.lat, e2.lng)
-                        if d_e1_e2_km * 1000 > distancia_max_m:
-                            continue
-                        # Custo atual (cada um no próprio cluster)
-                        atual = (
-                            _haversine_km(e1.lat, e1.lng, cent_i[0], cent_i[1])
-                            + _haversine_km(e2.lat, e2.lng, cent_j[0], cent_j[1])
-                        )
-                        # Custo se trocar
-                        swap = (
-                            _haversine_km(e1.lat, e1.lng, cent_j[0], cent_j[1])
-                            + _haversine_km(e2.lat, e2.lng, cent_i[0], cent_i[1])
-                        )
-                        ganho = atual - swap
-                        if ganho > melhor_ganho:
-                            melhor_ganho = ganho
-                            melhor_swap = (i, e1_idx, j, e2_idx)
+                if _haversine_km(e.lat, e.lng, outra.lat, outra.lng) <= raio_km:
+                    c[cl_idx] += 1
+        return c
 
-        if melhor_swap is None:
+    for _ in range(max_iter):
+        fez_swap = False
+        # Pra cada entrega: checa se majoritariamente está cercada por
+        # outro cluster.
+        for i in range(len(clusters)):
+            ci = clusters[i]
+            for ei_idx in range(len(ci)):
+                ei = ci[ei_idx]
+                vc = vizinhos_por_cluster(ei, i)
+                if not vc:
+                    continue
+                # Cluster com mais vizinhos
+                j_maj, n_maj = vc.most_common(1)[0]
+                if j_maj == i:
+                    continue
+                n_atual = vc.get(i, 0)
+                # Só age se OUTRO cluster tem ESTRITAMENTE mais vizinhos.
+                if n_maj <= n_atual:
+                    continue
+                # Encontra alguém em clusters[j_maj] cujos vizinhos
+                # majoritariamente estão em clusters[i]
+                cj = clusters[j_maj]
+                melhor_idx = None
+                melhor_score = 0
+                for ej_idx, ej in enumerate(cj):
+                    vcj = vizinhos_por_cluster(ej, j_maj)
+                    n_em_i = vcj.get(i, 0)
+                    n_em_j = vcj.get(j_maj, 0)
+                    score = n_em_i - n_em_j
+                    if score > melhor_score:
+                        melhor_score = score
+                        melhor_idx = ej_idx
+                if melhor_idx is None:
+                    continue
+                # Faz swap
+                ci[ei_idx], cj[melhor_idx] = cj[melhor_idx], ci[ei_idx]
+                fez_swap = True
+                break
+            if fez_swap:
+                break
+        if not fez_swap:
             break
-        i, e1_idx, j, e2_idx = melhor_swap
-        clusters[i][e1_idx], clusters[j][e2_idx] = clusters[j][e2_idx], clusters[i][e1_idx]
 
     return clusters
 
