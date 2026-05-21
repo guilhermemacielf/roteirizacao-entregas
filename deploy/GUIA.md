@@ -31,18 +31,36 @@ OSRM NÃO é exposto pra internet — só o Flask na porta 80.
 
 ## Fase 2 — Colocar o código no servidor
 
-**Opção A — GitHub (recomendado, facilita atualizar depois):**
+O repo é privado (`github.com/guilhermemacielf/roteirizacao-entregas`),
+então o servidor precisa de credencial pra clonar. Usamos uma **deploy
+key** SSH (read-only, escopo do repo) — não compartilha senha nenhuma
+nem o seu token pessoal do GitHub.
+
 ```bash
-# No seu PC, uma vez: criar repo privado e push (precisa do gh CLI ou web)
-# Depois, no servidor:
 ssh root@SEU_IP
-git clone https://github.com/SEU_USUARIO/roteirizacao-entregas.git /opt/roteirizacao
+
+# 1. Gera par de chaves SSH no servidor (Enter em tudo, sem senha)
+ssh-keygen -t ed25519 -C "rotas-vps" -f ~/.ssh/github_rotas -N ""
+
+# 2. Mostra a chave PÚBLICA — copia esse conteúdo:
+cat ~/.ssh/github_rotas.pub
 ```
 
-**Opção B — cópia direta (scp), sem GitHub:**
+Vai em https://github.com/guilhermemacielf/roteirizacao-entregas/settings/keys/new,
+cola a chave em **Key**, dá um título (`rotas-vps`), deixa **Allow write
+access** desmarcado, **Add key**.
+
+De volta ao servidor:
 ```bash
-# No seu PC (PowerShell), manda a pasta (exceto dados pesados):
-scp -r C:\Users\guilh\Documents\projetos\roteirizacao-entregas root@SEU_IP:/opt/roteirizacao
+# 3. Configura o SSH pra usar essa chave ao falar com o GitHub
+cat >> ~/.ssh/config <<'EOF'
+Host github.com
+  IdentityFile ~/.ssh/github_rotas
+  StrictHostKeyChecking accept-new
+EOF
+
+# 4. Clona via SSH (não HTTPS — a deploy key só funciona via SSH)
+git clone git@github.com:guilhermemacielf/roteirizacao-entregas.git /opt/roteirizacao
 ```
 
 ## Fase 3 — Setup automático
