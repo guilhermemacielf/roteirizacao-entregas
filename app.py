@@ -82,8 +82,10 @@ def index():
 
 @app.route("/api/config")
 def api_config():
-    """CD + entregadores do config.json — todos, com a flag `disponivel`,
-    pra a UI montar os toggles de quem está no dia."""
+    """CD + entregadores do config.json — apenas os marcados como disponiveis
+    (coluna ATIVO=SIM na planilha de sincronizacao). NAO disponiveis ficam
+    no config.json (pra historico/voltar facil ao reativar), mas a UI nao
+    precisa veer."""
     try:
         with open(CONFIG_PATH, encoding="utf-8") as f:
             cfg = json.load(f)
@@ -102,6 +104,7 @@ def api_config():
                 "preferencias": e.get("preferencias", []),
             }
             for e in cfg.get("entregadores", [])
+            if e.get("disponivel", True)
         ],
     })
 

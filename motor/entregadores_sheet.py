@@ -126,7 +126,9 @@ def sincronizar_entregadores(url: str, *, progresso=None) -> dict:
 
     iE = _idx_col("entregador")
     iF = _idx_col("endereco residencia") or _idx_col("endereço residência")
-    iJ = _idx_col("disponibilidade")
+    # Aceita varios cabecalhos pra "esta ativo":  ATIVO / DISPONIBILIDADE / DISPONIVEL
+    iJ = (_idx_col("ativo") or _idx_col("disponibilidade")
+          or _idx_col("disponivel") or _idx_col("disponível"))
     iK = _idx_col("capacidade maxima") or _idx_col("capacidade máxima")
     iL = _idx_col("rota preferencial")
 
