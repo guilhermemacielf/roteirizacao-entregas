@@ -629,6 +629,72 @@ def _rebalancear_por_km(clusters, cd,
     return clusters
 
 
+def _swap_outliers_entre_clusters(clusters, cd,
+                                    ganho_min_km: float = 0.5,
+                                    max_iter: int = 200):
+    """Troca paradas entre clusters mantendo os tamanhos.
+
+    Existe porque quando todos clusters estao saturados (ex: 6 clusters
+    × 18 paradas = 108 entregas exatas, hard cap em todos), nenhum dos
+    pos-processos "mover" funciona — eles desistem com
+    `if len(cj) >= n_max_paradas: continue`. Outliers ficam presos.
+
+    Esse swap nao precisa de espaco — troca o outlier de A com a parada
+    de B que tambem seria outlier em B (e estaria melhor em A).
+
+    Criterio: reducao da SOMA de distancias-ao-centroide. Para par (p em
+    A, q em B):
+       ganho_km = (d_p_para_A - d_p_para_B) + (d_q_para_B - d_q_para_A)
+    Se ganho_km > ganho_min_km, vale a troca. Greedy: aplica o swap de
+    maior ganho a cada iteracao, recalcula centroides, repete ate
+    nenhum swap render >= ganho_min_km.
+
+    Sem hard cap de min/max porque swap nao muda contagens.
+    """
+    if not clusters or len(clusters) < 2:
+        return clusters
+
+    for _ in range(max_iter):
+        centroides = []
+        for c in clusters:
+            if c:
+                lat = sum(e.lat for e in c) / len(c)
+                lng = sum(e.lng for e in c) / len(c)
+                centroides.append((lat, lng))
+            else:
+                centroides.append(None)
+
+        melhor = None
+        melhor_ganho = ganho_min_km
+        for i in range(len(clusters)):
+            if centroides[i] is None:
+                continue
+            ci_lat, ci_lng = centroides[i]
+            for ei, p in enumerate(clusters[i]):
+                d_p_i = _haversine_km(p.lat, p.lng, ci_lat, ci_lng)
+                for j in range(len(clusters)):
+                    if j == i or centroides[j] is None:
+                        continue
+                    cj_lat, cj_lng = centroides[j]
+                    d_p_j = _haversine_km(p.lat, p.lng, cj_lat, cj_lng)
+                    if d_p_j >= d_p_i:
+                        continue
+                    for ej, q in enumerate(clusters[j]):
+                        d_q_j = _haversine_km(q.lat, q.lng, cj_lat, cj_lng)
+                        d_q_i = _haversine_km(q.lat, q.lng, ci_lat, ci_lng)
+                        ganho = (d_p_i - d_p_j) + (d_q_j - d_q_i)
+                        if ganho > melhor_ganho:
+                            melhor_ganho = ganho
+                            melhor = (i, ei, j, ej)
+
+        if melhor is None:
+            break
+        i, ei, j, ej = melhor
+        clusters[i][ei], clusters[j][ej] = clusters[j][ej], clusters[i][ei]
+
+    return clusters
+
+
 def kmeans_balanced(entregas, cd, m: int, *,
                      max_iter: int = 30,
                      peso_angular: float = 0.1,
@@ -722,6 +788,9 @@ def kmeans_balanced(entregas, cd, m: int, *,
         clusters = _reduzir_clusters_longos(
             clusters, cd, n_min_paradas=nmin, n_max_paradas=nmax)
         clusters = _reduzir_entrelacamento(clusters, cd)
+        # Swap entre clusters cheios — único pos-processo que funciona quando
+        # todos clusters estao no cap maximo, porque nao muda contagens.
+        clusters = _swap_outliers_entre_clusters(clusters, cd)
         sets_antes = [set(id(e) for e in c) for c in snapshot]
         sets_depois = [set(id(e) for e in c) for c in clusters]
         if sets_antes == sets_depois:
