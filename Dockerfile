@@ -14,4 +14,4 @@ COPY . .
 # gunicorn: 2 workers sync, timeout alto (roteirização de cluster grande
 # + chamadas OSRM podem levar dezenas de segundos).
 EXPOSE 5000
-CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:5000", "--workers", "2", "--timeout", "180"]
+CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:5000", "--workers", "2", "--timeout", "600", "--access-logfile", "-", "--access-logformat", "%(h)s \"%(r)s\" %(s)s %(b)sb %(L)ss"]
