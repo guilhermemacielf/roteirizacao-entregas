@@ -40,6 +40,24 @@ EXEMPLO_CSV = os.path.join(BASE_DIR, "dados", "exemplo_entregas.csv")
 
 app = Flask(__name__, static_folder="static")
 
+# HTTP Basic Auth — protege TODAS as rotas (incluindo /static e /api).
+# Ativado só quando BASIC_AUTH_USER e BASIC_AUTH_PASSWORD estão setadas;
+# em dev local sem essas vars, fica aberto (igual era antes).
+_BASIC_USER = os.environ.get("BASIC_AUTH_USER", "").strip()
+_BASIC_PASS = os.environ.get("BASIC_AUTH_PASSWORD", "").strip()
+
+
+@app.before_request
+def _exigir_basic_auth():
+    if not (_BASIC_USER and _BASIC_PASS):
+        return None
+    auth = request.authorization
+    if auth and auth.username == _BASIC_USER and auth.password == _BASIC_PASS:
+        return None
+    return ("Auth required", 401,
+            {"WWW-Authenticate": 'Basic realm="Roteirizacao"'})
+
+
 # Avisa qual OSRM tá sendo usado — o público recusa matrizes >100 pontos,
 # o que pega de surpresa quem rodou só com a planilha de exemplo. Setup
 # do self-hosted: ver `osrm/README.md`.
