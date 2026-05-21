@@ -1,0 +1,12 @@
+# Não copiar pra imagem do app (reduz build + evita vazar dados)
+.git
+__pycache__
+*.pyc
+.venv
+venv
+tests
+osrm/data
+informe-de-rendimentos-*.pdf
+*.md
+# secrets/token ficam em volume, não na imagem
+dados/sheets_oauth_token.json

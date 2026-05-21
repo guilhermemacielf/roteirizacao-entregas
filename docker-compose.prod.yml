@@ -1,0 +1,46 @@
+# Stack de produção: Flask + OSRM juntos, 1 comando.
+#
+# Pré-requisito (rodar UMA vez no servidor antes do 1º up):
+#   cd osrm && ./setup.sh    # baixa sudeste, corta RMBH, processa
+#   → gera osrm/data/rmbh.osrm* (montado read-only no container OSRM)
+#
+# Variáveis (criar arquivo .env ao lado deste, NÃO commitar):
+#   GOOGLE_MAPS_API_KEY=AIza...
+#
+# Secrets montados como arquivo:
+#   oauth_client.json (na raiz)        → Google Sheets OAuth
+#   dados/ (volume)                    → cache geocode, config, valores, token
+#
+# Subir:   docker compose -f docker-compose.prod.yml up -d --build
+# Logs:    docker compose -f docker-compose.prod.yml logs -f
+# Parar:   docker compose -f docker-compose.prod.yml down
+
+services:
+  osrm:
+    image: osrm/osrm-backend:latest
+    command: ["osrm-routed", "--algorithm", "mld", "--max-table-size", "10000", "/data/rmbh.osrm"]
+    volumes:
+      - ./osrm/data:/data:ro
+    restart: unless-stopped
+    # NÃO expõe porta pro host — só a rede interna do compose (app fala
+    # com http://osrm:5000)
+
+  app:
+    build: .
+    environment:
+      - OSRM_URL=http://osrm:5000
+      - GOOGLE_MAPS_API_KEY=${GOOGLE_MAPS_API_KEY:-}
+      - GOOGLE_SHEETS_OAUTH_CLIENT_FILE=/app/oauth_client.json
+      - PYTHONUTF8=1
+      - PORT=5000
+    ports:
+      - "80:5000"   # acessa via http://IP_DO_SERVIDOR (porta 80)
+    depends_on:
+      - osrm
+    restart: unless-stopped
+    volumes:
+      # Persistência: cache de geocode, config.json, valores.json, token OAuth.
+      # Sem isso, cada rebuild perderia o cache de 3k endereços.
+      - ./dados:/app/dados
+      # Secret OAuth (read-only)
+      - ./oauth_client.json:/app/oauth_client.json:ro

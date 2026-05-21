@@ -12,3 +12,6 @@ osrm/data/
 oauth_client.json
 sa.json
 dados/sheets_oauth_token.json
+# Documentos pessoais que caíram na pasta
+informe-de-rendimentos-*.pdf
+*.pdf
