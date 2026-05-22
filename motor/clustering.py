@@ -483,12 +483,18 @@ def _reduzir_clusters_longos(clusters, cd,
 
 def _mover_paradas_isoladas(clusters, cd,
                              fator_distancia: float = 1.5,
+                             n_min_paradas: int = 10,
                              n_max_paradas: int = 18,
                              max_movimentos: int = 100):
     """Pra cada parada, se a distância ao centróide do PRÓPRIO cluster é
     `fator_distancia`× maior que a distância ao centróide de OUTRO cluster,
     move pra esse outro. Sem trocar (pode desbalancear levemente). Greedy:
     aplica o swap mais vantajoso em cada iter.
+
+    HARD CAPS: origem nao pode cair abaixo de n_min_paradas; destino nao
+    pode passar de n_max_paradas. Sem isso, multiplos movimentos
+    consecutivos podem drenar um cluster ate ficar com 4 paradas (caso
+    observado em producao).
 
     Esse é o caso "Camila" reportado: parada 1-5 estão muito mais perto
     do centróide da Ana Carolina/Tamara, mas K-means atribuiu à Camila
@@ -512,6 +518,9 @@ def _mover_paradas_isoladas(clusters, cd,
         melhor = None
         melhor_ganho = 0
         for i, ci in enumerate(clusters):
+            # HARD CAP min: cluster origem nao pode cair abaixo de n_min_paradas
+            if len(ci) <= n_min_paradas:
+                continue
             ci_lat, ci_lng = (centroides[i] or (cd.lat, cd.lng))
             for idx, e in enumerate(ci):
                 d_propria = _haversine_km(e.lat, e.lng, ci_lat, ci_lng)
@@ -548,6 +557,8 @@ def _mover_paradas_isoladas(clusters, cd,
 def _rebalancear_por_km(clusters, cd,
                         fator_acima_media: float = 1.15,
                         span_paradas_max: int = 8,
+                        n_min_paradas: int = 10,
+                        n_max_paradas: int = 18,
                         max_movimentos: int = 100):
     """Pós-processamento: rota MUITO mais longa em km que a média perde
     suas paradas mais externas (mais distantes do centróide) pra rotas
@@ -556,6 +567,9 @@ def _rebalancear_por_km(clusters, cd,
     Aceita span maior em paradas (até span_paradas_max) em troca de
     reduzir km da rota gigante. Estado-objetivo: nenhuma rota com
     diâmetro > fator_acima_media × média_dos_outros.
+
+    HARD CAPS: origem nao pode cair abaixo de n_min_paradas; destino nao
+    pode passar de n_max_paradas.
     """
     if not clusters or len(clusters) < 2:
         return clusters
@@ -574,8 +588,8 @@ def _rebalancear_por_km(clusters, cd,
             break  # já equilibrado
 
         cluster_grande = clusters[i_grande]
-        if len(cluster_grande) < 3:
-            break  # não vale tirar de cluster tão pequeno
+        if len(cluster_grande) <= n_min_paradas:
+            break  # ja no minimo, nao pode tirar
 
         # Identifica a parada mais "fora" (mais distante do centróide)
         lat_c = sum(e.lat for e in cluster_grande) / len(cluster_grande)
@@ -592,6 +606,9 @@ def _rebalancear_por_km(clusters, cd,
         candidatos = []
         for j, c in enumerate(clusters):
             if j == i_grande:
+                continue
+            # HARD CAP max no destino
+            if len(c) >= n_max_paradas:
                 continue
             # Cluster destino acumula 1 parada extra
             tam_novo = len(c) + 1
@@ -779,8 +796,10 @@ def kmeans_balanced(entregas, cd, m: int, *,
     for passada in range(5):
         snapshot = [list(c) for c in clusters]
         if rebalancear_km:
-            clusters = _rebalancear_por_km(clusters, cd)
-        clusters = _mover_paradas_isoladas(clusters, cd, n_max_paradas=nmax)
+            clusters = _rebalancear_por_km(
+                clusters, cd, n_min_paradas=nmin, n_max_paradas=nmax)
+        clusters = _mover_paradas_isoladas(
+            clusters, cd, n_min_paradas=nmin, n_max_paradas=nmax)
         clusters = _mover_paradas_via_vizinho_mais_proximo(
             clusters, cd, n_min_paradas=nmin, n_max_paradas=nmax)
         clusters = _balancear_por_tempo(
