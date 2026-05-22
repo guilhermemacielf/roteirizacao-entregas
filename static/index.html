@@ -219,7 +219,9 @@ async function init() {
 
 async function carregarConfig() {
   try {
-    const r = await fetch('/api/config');
+    // Cache-buster: navegadores ignoram Cache-Control as vezes, mas
+    // sempre tratam URL diferente como request diferente.
+    const r = await fetch('/api/config?_=' + Date.now());
     const d = await r.json();
     if (!r.ok) throw new Error(d.erro || 'falha ao carregar config');
     S.config = d;
