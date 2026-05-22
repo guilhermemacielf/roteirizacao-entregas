@@ -268,17 +268,41 @@ function renderConfig() {
   const cont = document.getElementById('lista-entregadores');
   cont.innerHTML = entregadores.map((e, i) => {
     const prefs = (e.preferencias || []).filter(Boolean);
-    const prefsLabel = prefs.length
-      ? `<div style="font-size:10px;color:var(--hint);margin-left:25px;line-height:1.2">prefere: ${prefs.join(', ')}</div>`
+    // Icone "i" pra revelar prefs quando clicado; some quando entregador
+    // nao tem prefs cadastradas.
+    const prefsToggle = prefs.length
+      ? `<button type="button" class="prefs-btn" title="ver preferencias"
+                  data-prefs="${prefs.join(', ').replace(/"/g, '&quot;')}"
+                  style="border:none;background:none;cursor:pointer;font-size:12px;
+                         color:var(--hint);padding:0 4px;line-height:1">&#9432;</button>`
       : '';
-    return `<label class="ent-item" style="flex-wrap:wrap">
+    return `<label class="ent-item" data-ent-id="${e.id}" style="flex-wrap:wrap">
       <input type="checkbox" class="chk-ent" data-id="${e.id}" ${e.disponivel ? 'checked' : ''}/>
       <span class="dot" style="background:${CORES[i % CORES.length]}"></span>
       <span class="nm">${e.nome}</span>
-      <span style="font-size:11px;color:var(--hint)">${e.id}</span>
-      ${prefsLabel}
+      ${prefsToggle}
+      <span style="font-size:11px;color:var(--hint);margin-left:auto">${e.id}</span>
+      <div class="prefs-content" style="display:none;font-size:10px;color:var(--hint);
+            margin:4px 0 0 25px;line-height:1.3;flex-basis:100%"></div>
     </label>`;
   }).join('');
+  // Bind dos botoes ⓘ — toggle inline da div prefs-content
+  cont.querySelectorAll('.prefs-btn').forEach(btn => {
+    btn.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const item = btn.closest('.ent-item');
+      const div = item.querySelector('.prefs-content');
+      if (div.style.display === 'none') {
+        div.textContent = 'prefere: ' + btn.dataset.prefs;
+        div.style.display = 'block';
+        btn.style.color = 'var(--azul)';
+      } else {
+        div.style.display = 'none';
+        btn.style.color = 'var(--hint)';
+      }
+    });
+  });
 }
 
 // ── Carregar entregas ─────────────────────────────────────

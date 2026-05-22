@@ -92,7 +92,7 @@ def api_config():
     except (OSError, json.JSONDecodeError) as e:
         return jsonify({"erro": f"não consegui ler dados/config.json: {e}"}), 500
     c = cfg.get("cd", {})
-    return jsonify({
+    resp = jsonify({
         "cd": {"nome": c.get("nome", "CD"), "lat": c.get("lat"), "lng": c.get("lng")},
         "entregadores": [
             {
@@ -107,6 +107,10 @@ def api_config():
             if e.get("disponivel", True)
         ],
     })
+    # Sem cache: filtro de ATIVO=SIM muda quando re-sincroniza com a planilha.
+    # Browser cacheando pode mostrar entregadores desativados ate refresh duro.
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return resp
 
 
 @app.route("/api/exemplo-entregas")
