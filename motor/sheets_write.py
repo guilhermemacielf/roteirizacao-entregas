@@ -281,6 +281,41 @@ def escrever_rotas(url_planilha: str, rotas: list[dict]) -> dict:
             # Não bloqueia — escrita já foi feita, só não conseguiu ordenar.
             log.warning("escrita OK, mas sort A-Z falhou: %s", e)
 
+        # Banding: cor de fundo alternada por entregador (branco / cinza claro)
+        # pra dar visibilidade de onde uma rota termina e a proxima comeca.
+        # Como Ordem ja eh contigua e a planilha foi ordenada por B, basta
+        # saber quantas paradas cada entregador tem e ir avancando linhas.
+        # Cores condicionais (verde/vermelho de observacoes) ficam POR CIMA
+        # no Google Sheets, entao continuam visiveis.
+        try:
+            COR_BRANCO = {"red": 1.0, "green": 1.0, "blue": 1.0}
+            COR_CINZA  = {"red": 0.937, "green": 0.937, "blue": 0.937}  # #EFEFEF
+            requests_banding = []
+            linha_atual = cab_idx + 1   # 0-based row da 1a entrega apos cabecalho
+            for idx_ent, rota in enumerate(rotas_ord):
+                paradas = rota.get("paradas") or []
+                if not paradas:
+                    continue
+                cor = COR_BRANCO if idx_ent % 2 == 0 else COR_CINZA
+                requests_banding.append({
+                    "repeatCell": {
+                        "range": {
+                            "sheetId": ws.id,
+                            "startRowIndex": linha_atual,
+                            "endRowIndex": linha_atual + len(paradas),
+                            "startColumnIndex": 0,
+                            "endColumnIndex": n_cols,
+                        },
+                        "cell": {"userEnteredFormat": {"backgroundColor": cor}},
+                        "fields": "userEnteredFormat.backgroundColor",
+                    }
+                })
+                linha_atual += len(paradas)
+            if requests_banding:
+                planilha.batch_update({"requests": requests_banding})
+        except Exception as e:
+            log.warning("banding por entregador falhou: %s", e)
+
     return {
         "linhas_atualizadas": n_atualizadas,
         "nao_encontradas":    nao_encontradas,
