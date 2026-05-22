@@ -26,6 +26,7 @@ import logging
 import os
 import re
 import time
+import unicodedata
 
 import requests
 
@@ -61,9 +62,102 @@ class GeocodeError(Exception):
 
 
 def _normalizar(endereco: str) -> str:
-    """Chave de cache — minúsculo, espaços colapsados. Sem isso, variações
-    triviais ('R.' vs 'Rua', espaço duplo) furariam o cache."""
+    """Normalizacao TRIVIAL — minusculo, espacos colapsados. Mantida pra
+    compatibilidade interna e logs. NAO eh mais a chave de cache (que
+    agora usa _chave_canonica)."""
     return " ".join((endereco or "").strip().lower().split())
+
+
+# Cidades da RMBH normalizadas (sem acento, lower) — pra remover da chave
+_CIDADES_NORM = set()
+for _c in [
+    "belo horizonte", "contagem", "nova lima", "sabara", "betim",
+    "lagoa santa", "santa luzia", "ribeirao das neves", "vespasiano",
+    "ibirite", "brumadinho", "confins", "pedro leopoldo", "esmeraldas",
+    "mateus leme", "caete", "jaboticatubas", "itabirito",
+]:
+    _CIDADES_NORM.add(_c)
+
+# Tipos de via que sao genericos — descartar na chave canonica
+_TIPOS_VIA = {"rua", "r", "avenida", "av", "alameda", "al", "praca", "pca",
+              "travessa", "tv", "estrada", "estr", "rodovia", "rod", "via",
+              "largo", "ladeira"}
+
+# Stopwords de UF/pais
+_STOPWORDS_FIM = {"mg", "br", "brasil"}
+
+# Regex pra complementos: "apto 302", "casa 5", "bl 2", "sala 101", etc.
+# Captura ate o proximo token alfanumerico curto.
+_COMP_RE = re.compile(
+    r"\b(?:apto?\.?|apartamento|ap\.?|apart\.?|apro\.?|casa|cs|bloco|bl\.?|"
+    r"sala|loja|box|cobertura|cob\.?|fundos|frente|conj\.?|edif\.?|edificio|"
+    r"predio|prédio|andar)"
+    r"[\s.:\-]*[\dA-Za-z][\dA-Za-z\-/]*\b",
+    flags=re.IGNORECASE,
+)
+
+# Regex pra CEP
+_CEP_RE = re.compile(r"\b\d{5}-?\d{3}\b")
+
+
+def _chave_canonica(endereco: str) -> str:
+    """Chave de cache ROBUSTA a variacoes de formato do mesmo endereco fisico.
+
+    Mesmo predio em formatos diferentes (Instabuy raw vs export XLSX vs
+    formatos com bairro no inicio etc.) colapsa pra mesma chave.
+
+    Algoritmo:
+      1. Tira acento + minusculo
+      2. Remove CEP, complementos (apto X, sala Y, casa, bl, etc.), cidade,
+         estado (mg/br/brasil)
+      3. Remove tipos genericos de via (rua, av, alameda, etc.)
+      4. Extrai o PRIMEIRO numero significativo (1-5 digitos) como numero
+         da rua. Tudo o que vier como numero depois eh descartado (sao
+         complementos sem palavra-chave).
+      5. Tokens restantes (nome de rua + bairro embaralhados) sao ORDENADOS
+         alfabeticamente — descarta a ordem (que varia entre formatos).
+      6. Chave final: tokens-ordenados + "|n" + numero.
+
+    Trade-off: ruas homonimas em bairros diferentes (raro) com mesmo numero
+    poderiam colapsar — mas como incluimos bairro nos tokens, na pratica
+    nao acontece.
+    """
+    if not endereco:
+        return ""
+    s = endereco.strip().lower()
+    # Remove acentos
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+    # Tira CEP, complementos
+    s = _CEP_RE.sub(" ", s)
+    s = _COMP_RE.sub(" ", s)
+    # Tira pontuacao
+    s = re.sub(r"[,;.\-/]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    # Remove cidades (de mais longa pra mais curta pra nao casar "santa" em "santa luzia")
+    for cidade in sorted(_CIDADES_NORM, key=len, reverse=True):
+        s = re.sub(r"\b" + re.escape(cidade) + r"\b", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    # Tokens
+    tokens = s.split()
+    numero = ""
+    tokens_sem_num = []
+    for t in tokens:
+        if t.isdigit():
+            if not numero and 1 <= len(t) <= 5:
+                numero = t
+            # numeros secundarios descartados (complementos sem palavra-chave)
+            continue
+        if t in _TIPOS_VIA or t in _STOPWORDS_FIM:
+            continue
+        # Tira tokens com 1 letra (provavelmente ruido)
+        if len(t) <= 1:
+            continue
+        tokens_sem_num.append(t)
+    tokens_sem_num.sort()
+    chave_texto = " ".join(tokens_sem_num)
+    if numero:
+        return f"{chave_texto}|n{numero}"
+    return chave_texto
 
 
 def carregar_cache() -> dict:
@@ -526,7 +620,7 @@ def geocodificar(endereco: str, cache: dict | None = None) -> tuple[float, float
     Se `cache` for passado, opera nesse dict e NÃO salva (o chamador
     salva no fim — útil pra geocodificar uma lista sem I/O por item).
     Só dorme quando bate na rede; cache hit é instantâneo."""
-    chave = _normalizar(endereco)
+    chave = _chave_canonica(endereco)
     if not chave:
         return None
     proprio = cache is None
@@ -560,7 +654,7 @@ def geocodificar_lista(
     n_consultas_pendentes = 0
     houve_consulta = False
     for i, end in enumerate(enderecos, start=1):
-        chave = _normalizar(end)
+        chave = _chave_canonica(end)
         if chave and chave not in cache:
             houve_consulta = True
             n_consultas_pendentes += 1

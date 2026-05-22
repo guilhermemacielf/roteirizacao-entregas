@@ -24,7 +24,7 @@ from motor.io import carregar_entregas_texto, rotas_para_dict, sheets_para_csv_m
 from motor.roteirizar import roteirizar, _tsp_cluster, _agrupar_lalamoves
 from motor.matriz import MatrizError, matriz as osrm_matriz
 from motor.geocode import (GeocodeError, carregar_cache, salvar_cache,
-                            _normalizar, geocodificar,
+                            _chave_canonica, geocodificar,
                             purgar_centroides_genericos, limpar_falhas)
 from motor.obs import extrair_janela
 from motor.sheets_write import escrever_rotas, SheetsWriteError
@@ -197,7 +197,7 @@ def api_geocode_manual():
     # Persiste no cache pra próxima vez que esse endereço aparecer
     # (ex: cliente recorrente que sempre falha no Nominatim) não falhar mais.
     cache = carregar_cache()
-    cache[_normalizar(endereco)] = [lat, lng]
+    cache[_chave_canonica(endereco)] = [lat, lng]
     salvar_cache(cache)
 
     # Mesma extração de horário do pipeline principal (obs + nome combinados —
