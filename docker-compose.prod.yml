@@ -31,6 +31,7 @@ services:
       - OSRM_URL=http://osrm:5000
       - GOOGLE_MAPS_API_KEY=${GOOGLE_MAPS_API_KEY:-}
       - GOOGLE_SHEETS_OAUTH_CLIENT_FILE=/app/oauth_client.json
+      - GOOGLE_SHEETS_SA_FILE=/app/sa.json
       - BASIC_AUTH_USER=${BASIC_AUTH_USER:-}
       - BASIC_AUTH_PASSWORD=${BASIC_AUTH_PASSWORD:-}
       - PYTHONUTF8=1
@@ -44,5 +45,6 @@ services:
       # Persistência: cache de geocode, config.json, valores.json, token OAuth.
       # Sem isso, cada rebuild perderia o cache de 3k endereços.
       - ./dados:/app/dados
-      # Secret OAuth (read-only)
+      # Secrets read-only
       - ./oauth_client.json:/app/oauth_client.json:ro
+      - ./sa.json:/app/sa.json:ro
