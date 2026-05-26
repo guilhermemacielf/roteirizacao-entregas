@@ -78,7 +78,11 @@
   .rota-paradas{border-top:1px solid var(--border);background:var(--surface2);
     padding:6px 11px;font-size:12px;display:none}
   .rota-card.aberta .rota-paradas{display:block}
-  .parada{display:flex;gap:7px;padding:2px 0;color:var(--muted)}
+  .parada{display:flex;gap:7px;padding:2px 0;color:var(--muted);cursor:grab;
+    border-radius:3px;transition:background .1s}
+  .parada:hover{background:rgba(0,0,0,.04)}
+  .parada.dragging{opacity:.4;cursor:grabbing}
+  .parada.drop-target{border-top:2px solid var(--azul)}
   .parada .o{font-weight:700;color:var(--text);min-width:20px}
   .badge-lala{background:#ede9fe;color:#6d28d9;font-size:10px;font-weight:700;
     padding:1px 6px;border-radius:4px}
@@ -811,7 +815,9 @@ function renderResultado() {
     const paradas = r.paradas.map(p => {
       const titulo = p.nome || p.id;
       const sub = p.nome ? ` <span style="color:var(--hint)">· ${p.id}</span>` : '';
-      return `<div class="parada"><span class="o">${p.ordem}.</span>
+      // draggable + atributos data-* pra identificar quem arrastou e em qual rota
+      return `<div class="parada" draggable="true" data-rota="${i}" data-pid="${(p.id || '').replace(/"/g, '&quot;')}">
+        <span class="o">${p.ordem}.</span>
         <span style="flex:1">${titulo}${sub}${p.obs ? ` <span style="color:var(--hint)">· ${p.obs}</span>` : ''}</span>
         <span>~${hms(p.chegada_estimada_s)}</span></div>`;
     }).join('');
@@ -836,6 +842,91 @@ function renderResultado() {
     </div>`;
   }).join('');
   document.getElementById('resultado').innerHTML = html;
+  ligarDragDropParadas();
+}
+
+// ── Drag-and-drop pra reordenar paradas DENTRO de uma rota ──────
+// Event delegation no container #resultado pra nao precisar religar
+// handlers a cada renderResultado.
+function ligarDragDropParadas() {
+  const cont = document.getElementById('resultado');
+  if (cont._dragLigado) return;   // evita rebind
+  cont._dragLigado = true;
+
+  let dragData = null;   // {rota, pid, el}
+
+  cont.addEventListener('dragstart', (ev) => {
+    const el = ev.target.closest('.parada');
+    if (!el || !el.dataset.pid) return;
+    dragData = { rota: el.dataset.rota, pid: el.dataset.pid, el };
+    el.classList.add('dragging');
+    ev.dataTransfer.effectAllowed = 'move';
+    ev.dataTransfer.setData('text/plain', el.dataset.pid);
+  });
+
+  cont.addEventListener('dragover', (ev) => {
+    const sobre = ev.target.closest('.parada');
+    if (!sobre || !dragData || sobre.dataset.rota !== dragData.rota) return;
+    ev.preventDefault();   // permite drop
+    ev.dataTransfer.dropEffect = 'move';
+    // Marca visualmente onde vai cair
+    cont.querySelectorAll('.parada.drop-target').forEach(e => e.classList.remove('drop-target'));
+    if (sobre !== dragData.el) sobre.classList.add('drop-target');
+  });
+
+  cont.addEventListener('drop', async (ev) => {
+    const sobre = ev.target.closest('.parada');
+    if (!sobre || !dragData || sobre.dataset.rota !== dragData.rota) return;
+    ev.preventDefault();
+    cont.querySelectorAll('.parada.drop-target').forEach(e => e.classList.remove('drop-target'));
+    if (sobre === dragData.el) return;
+    await reordenarPara(parseInt(dragData.rota), dragData.pid, sobre.dataset.pid);
+  });
+
+  cont.addEventListener('dragend', () => {
+    cont.querySelectorAll('.parada').forEach(e => {
+      e.classList.remove('dragging'); e.classList.remove('drop-target');
+    });
+    dragData = null;
+  });
+}
+
+async function reordenarPara(rotaIdx, pidArrastado, pidDestino) {
+  if (!S.resultado) return;
+  const rota = S.resultado.rotas[rotaIdx];
+  if (!rota || !rota.paradas) return;
+  const paradas = rota.paradas;
+  const iSrc = paradas.findIndex(p => String(p.id) === pidArrastado);
+  const iDst = paradas.findIndex(p => String(p.id) === pidDestino);
+  if (iSrc < 0 || iDst < 0 || iSrc === iDst) return;
+  // Remove origem e insere antes do destino (Sortable.js style)
+  const movida = paradas[iSrc];
+  const semOrigem = paradas.filter((_, k) => k !== iSrc);
+  const novoIdx = iSrc < iDst ? iDst - 1 : iDst;
+  semOrigem.splice(novoIdx, 0, movida);
+  const idsEmOrdem = semOrigem.map(p => String(p.id));
+
+  toast('Reordenando…');
+  try {
+    const r = await fetch('/api/rotear/reordenar', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        rota_idx: rotaIdx,
+        ids_em_ordem: idsEmOrdem,
+        rotas: S.resultado.rotas,
+        cd: S.resultado.cd,
+      }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.erro || 'falha ao reordenar');
+    // Substitui o estado e re-renderiza
+    S.resultado = d;
+    renderResultado(d);
+    desenharRotas(d);
+    toast('✓ ordem atualizada');
+  } catch (e) {
+    toast(`Erro: ${e.message}`);
+  }
 }
 
 function toggleRota(i) {
