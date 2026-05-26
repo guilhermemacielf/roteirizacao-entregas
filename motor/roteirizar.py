@@ -216,7 +216,14 @@ def _tsp_cluster(
         if e.janela_fim is not None:
             cv.SetMax(e.janela_fim * 60)
         if cap_chegada is not None:
-            cv.SetMax(cap_chegada)
+            # Se janela_inicio > cap_chegada, a entrega nao cabe no horizonte
+            # da rota (ex: "depois das 14h" com rota terminando 14h). Aplicar
+            # SetMax(cap_chegada) com min ja > cap quebra o solver com
+            # "CP Solver fail". Pula o cap nesse caso — a Disjunction abaixo
+            # descarta a entrega pra Lalamove se ela genuinamente nao couber.
+            ini_seg = (e.janela_inicio * 60) if e.janela_inicio is not None else 0
+            if ini_seg <= cap_chegada:
+                cv.SetMax(cap_chegada)
 
     # Disjunction: solver pode dropar entregas com janela que não cabem
     # (viram Lalamove no pós-processo). Penalidade enorme — só dropa se
