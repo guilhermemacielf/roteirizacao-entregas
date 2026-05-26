@@ -127,6 +127,11 @@
         <button class="btn btn-sm" onclick="carregarExemplo()">Usar exemplo</button>
       </div>
       <div class="info" id="info-entregas">Nenhuma entrega carregada. Cole a URL do Sheets (planilha Instabuy, compartilhada como "qualquer pessoa com o link") ou suba um CSV com <b>id, lat, lng</b>.</div>
+      <div style="display:flex;gap:4px;align-items:center;margin-top:6px">
+        <input type="text" id="busca-entrega" placeholder="🔍 buscar (nome, código ou endereço)"
+               oninput="aplicarFiltroBusca()" style="flex:1;font-size:12px"/>
+        <button class="btn btn-sm" onclick="limparFiltroBusca()" title="limpar">×</button>
+      </div>
       <div id="falhas-geocode"></div>
       <div id="aviso-distantes"></div>
     </div>
@@ -205,7 +210,36 @@ let S = {
   sheetUrl: '',         // URL da planilha (preserva pra "Enviar pra planilha")
   modoSelecao: false,   // true = clique em parada toggle vermelho
   selecionadas: new Set(),  // ids das entregas marcadas em vermelho
+  filtroBusca: '',      // texto da busca (matcha id/nome/endereco)
 };
+
+// ── Busca / filtro de marker ──────────────────────────────
+function _normBusca(s) {
+  // sem acento, lower — pro match ser tolerante
+  return (s || '').normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase();
+}
+function _matchFiltro(p) {
+  if (!S.filtroBusca) return true;
+  const alvo = _normBusca(S.filtroBusca);
+  return _normBusca(p.id).includes(alvo)
+      || _normBusca(p.nome).includes(alvo)
+      || _normBusca(p.endereco).includes(alvo);
+}
+function aplicarFiltroBusca() {
+  S.filtroBusca = (document.getElementById('busca-entrega')?.value || '').trim();
+  // Redesenha o mapa com filtro aplicado
+  if (S.resultado) {
+    desenharRotas(S.resultado);
+  } else {
+    desenharEntrada();
+  }
+}
+function limparFiltroBusca() {
+  const inp = document.getElementById('busca-entrega');
+  if (inp) inp.value = '';
+  S.filtroBusca = '';
+  if (S.resultado) desenharRotas(S.resultado); else desenharEntrada();
+}
 let map, camadaEntrada, camadaRotas;
 
 // ── Init ──────────────────────────────────────────────────
@@ -520,7 +554,8 @@ function desenharEntrada() {
   const pts = parseCsv(S.entregasCsv);
   const bounds = [];
   const distantes = [];
-  pts.forEach(p => {
+  const ptsFiltrados = pts.filter(_matchFiltro);
+  ptsFiltrados.forEach(p => {
     const distKm = cd ? haversineKm(cd.lat, cd.lng, p.lat, p.lng) : 0;
     const suspeito = cd && distKm > DIST_SUSPEITA_KM;
     if (suspeito) distantes.push({ ...p, distKm });
@@ -533,8 +568,17 @@ function desenharEntrada() {
       .addTo(camadaEntrada);
     bounds.push([p.lat, p.lng]);
   });
-  if (cd) bounds.push([cd.lat, cd.lng]);
-  if (bounds.length > 1) map.fitBounds(bounds, { padding: [40, 40] });
+  // Filtro ativo + poucos resultados: zoom no resultado. Sem filtro: fit normal.
+  if (S.filtroBusca && ptsFiltrados.length >= 1 && ptsFiltrados.length <= 3) {
+    if (ptsFiltrados.length === 1) {
+      map.setView([ptsFiltrados[0].lat, ptsFiltrados[0].lng], 16);
+    } else {
+      map.fitBounds(bounds, { padding: [60, 60], maxZoom: 16 });
+    }
+  } else {
+    if (cd) bounds.push([cd.lat, cd.lng]);
+    if (bounds.length > 1) map.fitBounds(bounds, { padding: [40, 40] });
+  }
   renderAvisoDistantes(distantes);
 }
 
@@ -959,6 +1003,8 @@ function desenharRotas(filtroIdx = null, preservarZoom = false) {
     let markersOk = 0, markersFail = 0;
     r.paradas.forEach((p, paradaIdx) => {
       try {
+        // Filtro de busca — pula paradas que nao matcham
+        if (!_matchFiltro(p)) return;
         // Valida coords ANTES de criar marker (NaN/null quebram silencioso)
         const lat0 = Number(p.lat), lng0 = Number(p.lng);
         if (!Number.isFinite(lat0) || !Number.isFinite(lng0)) {
@@ -1049,7 +1095,15 @@ function desenharRotas(filtroIdx = null, preservarZoom = false) {
     L.polyline(linha, { color: cor, weight: 4, opacity: .85 })
       .addTo(camadaRotas);
   });
-  if (!preservarZoom && todos.length > 1) map.fitBounds(todos, { padding: [40, 40] });
+  if (!preservarZoom && todos.length > 1) {
+    // Com filtro de busca ativo + poucos resultados, zoom mais perto.
+    if (S.filtroBusca && todos.length <= 3) {
+      if (todos.length === 1) map.setView(todos[0], 16);
+      else map.fitBounds(todos, { padding: [60, 60], maxZoom: 16 });
+    } else {
+      map.fitBounds(todos, { padding: [40, 40] });
+    }
+  }
 }
 
 function focarRota(i) {
