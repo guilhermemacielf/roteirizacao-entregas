@@ -10,6 +10,7 @@ class Entrega:
     lat: float
     lng: float
     nome: str = ""             # nome do cliente (exibição) — pode repetir
+    endereco: str = ""         # endereco bruto (pra exibir no popup + re-geocodificar)
     obs: str = ""              # observação livre (ex: "só após 14h")
     bairro: str = ""           # bairro extraído do endereço (pra preferências de entregador)
     cidade: str = ""           # cidade extraída do endereço (pra cálculo de valor — Contagem, Vespasiano, etc.)

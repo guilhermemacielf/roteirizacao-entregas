@@ -477,6 +477,7 @@ function parseCsv(texto) {
   if (linhas.length < 2) return [];
   const cab = parseCsvRow(linhas[0]).map(c => c.trim().toLowerCase());
   const iId = cab.indexOf('id'), iNome = cab.indexOf('nome'),
+        iEnd = cab.indexOf('endereco'),
         iLat = cab.indexOf('lat'), iLng = cab.indexOf('lng');
   if (iLat < 0 || iLng < 0) return [];
   const pts = [];
@@ -488,6 +489,7 @@ function parseCsv(texto) {
     pts.push({
       id: (c[iId] || ('L' + k)).trim(),
       nome: iNome >= 0 ? (c[iNome] || '').trim() : '',
+      endereco: iEnd >= 0 ? (c[iEnd] || '').trim() : '',
       lat, lng,
     });
   }
@@ -590,7 +592,9 @@ function abrirEdicaoPonto(id) {
      <div id="painel-end-${idEsc}">
        <input type="text" id="edit-end-${idEsc}" class="fl-coord-input" style="width:100%"
          placeholder="Rua Exemplo, 123, Belo Horizonte"
+         value="${(p.endereco || '').replace(/"/g, '&quot;')}"
          onkeydown="if(event.key==='Enter')buscarEnderecoPonto('${idEsc}')"/>
+       <div style="font-size:11px;color:#888;margin-top:3px">edite e clique buscar (ex: tire o complemento que tá confundindo)</div>
        <div style="display:flex;gap:4px;margin-top:6px">
          <button class="btn btn-sm btn-azul" onclick="buscarEnderecoPonto('${idEsc}')">Buscar e salvar</button>
          <button class="btn btn-sm" onclick="map.closePopup()">Cancelar</button>
@@ -890,16 +894,34 @@ function desenharRotas(filtroIdx = null, preservarZoom = false) {
         if (S.modoSelecao) {
           m.on('click', () => toggleSelecao(String(p.id)));
         } else {
-          // Escapa HTML do nome/obs/id pra não quebrar template literal
-          const esc = (s) => String(s ?? '').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+          // Escapa HTML do nome/obs/id/endereco pra não quebrar template literal
+          const esc = (s) => String(s ?? '').replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+          const endHtml = p.endereco
+            ? `<div style="margin-top:4px;font-size:11px;color:#555">${esc(p.endereco)}
+                 <button class="rege-btn" data-id="${esc(p.id)}" data-end="${esc(p.endereco)}"
+                         style="border:none;background:none;cursor:pointer;color:var(--azul);
+                                font-size:11px;padding:0 4px">✏ editar</button>
+               </div>`
+            : '';
           const partes = [
             `<b>${esc(p.nome || p.id)}</b> · parada ${p.ordem}`,
             p.nome ? `<br><span style="color:#888">${esc(p.id)}</span>` : '',
             `<br>${esc(r.entregador?.nome || 'sem entregador')}`,
             `<br>chega ~${hms(p.chegada_estimada_s)}`,
             p.obs ? `<br><i>${esc(p.obs)}</i>` : '',
+            endHtml,
           ];
           m.bindPopup(partes.join(''));
+          // Quando o popup abrir, liga o handler do "editar" — abre o
+          // editor de endereco/coords (mesma UI usada antes de rotear).
+          m.on('popupopen', (ev) => {
+            const popupEl = ev.popup.getElement();
+            const btn = popupEl?.querySelector('.rege-btn');
+            if (!btn) return;
+            btn.addEventListener('click', () => {
+              abrirEdicaoPonto(String(p.id));
+            });
+          });
         }
         m.addTo(camadaRotas);
         markersOk++;

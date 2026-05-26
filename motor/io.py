@@ -131,10 +131,12 @@ def _csv_motor(linhas: list[dict]) -> str:
     upload manual pra reaproveitar o fluxo da UI."""
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["id", "nome", "lat", "lng", "bairro", "cidade", "obs", "janela_inicio", "janela_fim"])
+    w.writerow(["id", "nome", "endereco", "lat", "lng", "bairro", "cidade",
+                "obs", "janela_inicio", "janela_fim"])
     for e in linhas:
         w.writerow([
-            e["id"], e["nome"], e["lat"], e["lng"],
+            e["id"], e["nome"], e.get("endereco", ""),
+            e["lat"], e["lng"],
             e.get("bairro", ""), e.get("cidade", ""), e["obs"],
             "" if e["janela_inicio"] is None else e["janela_inicio"],
             "" if e["janela_fim"]    is None else e["janela_fim"],
@@ -223,6 +225,7 @@ def _parse_entregas(reader: csv.DictReader) -> list[Entrega]:
             lat=lat,
             lng=lng,
             nome=(row.get("nome") or "").strip(),
+            endereco=(row.get("endereco") or "").strip(),
             obs=(row.get("obs") or "").strip(),
             bairro=(row.get("bairro") or "").strip(),
             cidade=(row.get("cidade") or "").strip(),
@@ -336,6 +339,7 @@ def rotas_para_dict(rotas: list[Rota], cd: CD) -> dict:
                     "ordem":              p.ordem,
                     "id":                 p.entrega.id,
                     "nome":               p.entrega.nome,
+                    "endereco":           p.entrega.endereco,
                     "lat":                p.entrega.lat,
                     "lng":                p.entrega.lng,
                     "bairro":             p.entrega.bairro,
