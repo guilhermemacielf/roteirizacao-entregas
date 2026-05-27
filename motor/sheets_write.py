@@ -23,6 +23,12 @@ Sem nenhum configurado, o endpoint retorna 503 com instruções.
 import logging
 import os
 import re
+from datetime import datetime
+try:
+    from zoneinfo import ZoneInfo
+    _TZ_BR = ZoneInfo("America/Sao_Paulo")
+except (ImportError, Exception):
+    _TZ_BR = None   # cai pra hora local do servidor
 
 log = logging.getLogger(__name__)
 
@@ -123,6 +129,69 @@ def _abrir_cliente():
         "'C:\\path\\oauth_client.json'. Na 1ª chamada abre o browser pra "
         "autorizar e salva o token; depois é automático."
     )
+
+
+def _aba_por_nome(planilha, nome: str):
+    """Acha aba pelo nome (caso-insensitive)."""
+    alvo = (nome or "").strip().lower()
+    for w in planilha.worksheets():
+        if (w.title or "").strip().lower() == alvo:
+            return w
+    return None
+
+
+def _atualizar_aba_km(planilha, rotas: list[dict]) -> int:
+    """Adiciona 1 linha por entregador na aba 'KM' do mesmo arquivo do Sheets:
+       A=Entregador, B=KM total da rota, C=Data, D=Hora, E=Qtd entregas.
+
+    KM ja inclui o trecho final ate a casa do entregador (vem do OSRM).
+    Qtd entregas eh n_paradas (NAO inclui o trecho da casa).
+    Skip rotas Lalamove e Entregas CD (so entregadores reais).
+    Append abaixo da ultima linha preenchida da aba. Header (linha 1) deve
+    existir; nao mexemos nele.
+
+    Retorna o numero de linhas adicionadas.
+    """
+    ws_km = _aba_por_nome(planilha, "KM")
+    if ws_km is None:
+        log.warning("aba 'KM' nao encontrada — pulando registro de quilometragem")
+        return 0
+
+    agora = datetime.now(_TZ_BR) if _TZ_BR else datetime.now()
+    data_str = agora.strftime("%d/%m/%Y")
+    hora_str = agora.strftime("%H:%M")
+
+    novas = []
+    for r in rotas:
+        if r.get("candidata_lalamove"):
+            continue
+        ent = r.get("entregador") or {}
+        nome_ent = (ent.get("nome") or "").strip()
+        # Ignora rota especial "Entregas CD" (entregador virtual sem casa)
+        if not nome_ent or nome_ent.lower() == "entregas cd":
+            continue
+        km_total = float(r.get("distancia_km") or 0)
+        n_entregas = int(r.get("n_paradas") or len(r.get("paradas") or []))
+        novas.append([nome_ent, km_total, data_str, hora_str, n_entregas])
+
+    if not novas:
+        return 0
+
+    # Acha proxima linha livre — pega a 1a linha sem nada na col A apos cabecalho.
+    valores_a = ws_km.col_values(1)  # ['Entregador', 'Joao', ...]
+    proxima_linha = len(valores_a) + 1   # 1-based
+    if proxima_linha < 2:
+        proxima_linha = 2   # garante que nao sobrescreve o header
+
+    fim_linha = proxima_linha + len(novas) - 1
+    range_str = f"A{proxima_linha}:E{fim_linha}"
+    try:
+        ws_km.update(range_str, novas, value_input_option="USER_ENTERED")
+    except Exception as e:
+        log.warning("falha gravando aba KM: %s", e)
+        return 0
+
+    return len(novas)
 
 
 def _id_planilha(url: str) -> str:
@@ -316,8 +385,17 @@ def escrever_rotas(url_planilha: str, rotas: list[dict]) -> dict:
         except Exception as e:
             log.warning("banding por entregador falhou: %s", e)
 
+    # Registro na aba KM (1 linha por entregador, com KM/Data/Hora/Qtd).
+    # Nao bloqueia o retorno se falhar — escrita principal ja foi feita.
+    try:
+        n_km = _atualizar_aba_km(planilha, rotas)
+    except Exception as e:
+        log.warning("nao gravou aba KM: %s", e)
+        n_km = 0
+
     return {
         "linhas_atualizadas": n_atualizadas,
         "nao_encontradas":    nao_encontradas,
+        "linhas_km":          n_km,
         "modo_auth":          "service_account" if _sa_path() else "oauth_usuario",
     }
