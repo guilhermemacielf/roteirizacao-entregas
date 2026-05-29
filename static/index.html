@@ -692,7 +692,7 @@ async function buscarEnderecoPonto(id) {
     });
     const d = await r.json();
     if (!r.ok) throw new Error(d.erro || 'falha na busca');
-    aplicarEdicaoNoCsv(id, d.lat, d.lng);
+    aplicarEdicaoNoCsv(id, d.lat, d.lng, endereco);
     toast(`✓ encontrado em ${d.lat.toFixed(5)}, ${d.lng.toFixed(5)}`);
     map.closePopup();
   } catch (e) {
@@ -720,12 +720,13 @@ function salvarEdicaoPonto(id) {
   map.closePopup();
 }
 
-function aplicarEdicaoNoCsv(id, lat, lng) {
-  // Substitui lat/lng da linha do CSV pelo id (case-sensitive).
+function aplicarEdicaoNoCsv(id, lat, lng, enderecoNovo) {
+  // Substitui lat/lng (e opcionalmente endereco) da linha do CSV pelo id.
   const linhas = S.entregasCsv.split(/\r?\n/);
   if (linhas.length < 2) return;
   const cab = parseCsvRow(linhas[0]).map(c => c.trim().toLowerCase());
   const iId = cab.indexOf('id'), iLat = cab.indexOf('lat'), iLng = cab.indexOf('lng');
+  const iEnd = cab.indexOf('endereco');
   if (iId < 0 || iLat < 0 || iLng < 0) return toast('CSV sem colunas id/lat/lng');
   let editadas = 0;
   for (let k = 1; k < linhas.length; k++) {
@@ -734,11 +735,34 @@ function aplicarEdicaoNoCsv(id, lat, lng) {
     if ((c[iId] || '').trim() !== id) continue;
     c[iLat] = String(lat);
     c[iLng] = String(lng);
+    if (enderecoNovo && iEnd >= 0) c[iEnd] = enderecoNovo;
     linhas[k] = c.map(v => /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v).join(',');
     editadas++;
   }
   if (!editadas) return toast(`Entrega ${id} não encontrada no CSV`);
   S.entregasCsv = linhas.join('\n');
+
+  // Se ja roteirizou: preserva S.resultado e atualiza so a parada editada.
+  // Sem isso, setEntregas zera o resultado e a entrega "some" da rota.
+  if (S.resultado) {
+    let encontrou = false;
+    for (const rota of S.resultado.rotas || []) {
+      for (const par of rota.paradas || []) {
+        if (String(par.id) === String(id)) {
+          par.lat = lat;
+          par.lng = lng;
+          if (enderecoNovo) par.endereco = enderecoNovo;
+          encontrou = true;
+        }
+      }
+    }
+    if (encontrou) {
+      renderResultado(S.resultado);
+      desenharRotas(S.resultado);
+      return;
+    }
+    // Se nao achou (caso improvavel), volta pro fluxo padrao.
+  }
   setEntregas(S.entregasCsv, 'editado');
 }
 
