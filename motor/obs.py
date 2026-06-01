@@ -62,11 +62,20 @@ def extrair_janela(texto: str, base: int = HORA_BASE_MIN) -> tuple[int | None, i
 
     # 2. Prazo: "ate as 10:00", "ate 9h30", "entregar ate 10h"
     # \bate\b evita casar "ate" dentro de "abacate", "tomate" etc.
-    m = re.search(r"\bate\b\s+(?:as\s+)?" + _HORA, t)
-    if m:
+    # Tenta TODAS as ocorrencias (re.finditer); pega a janela mais restritiva
+    # (menor fim positivo). Cliente as vezes escreve "ate 9h" no nome E
+    # "ate 09:30" no obs — queremos a mais restritiva entre as duas.
+    candidatos_fim = []
+    for m in re.finditer(r"\bate\b\s+(?:as\s+)?" + _HORA, t):
         f = _rel(m.group(1), m.group(2), base)
-        if f is not None and f > 0:      # "ate 8h" (antes da saída) → ignora
-            fim = f
+        if f is None or f < 0:
+            continue  # "ate 8h" (antes da saída) e datas absurdas
+        # Janela minima viavel: 15min (CD-ate-1a parada nao eh instantaneo).
+        # "Ate 9h" (= 0 min) vira "janela apertada de 15min" — sinaliza
+        # prioridade extrema sem fazer o TSP descartar a entrega.
+        candidatos_fim.append(max(15, f))
+    if candidatos_fim:
+        fim = min(candidatos_fim)
 
     # 3. Início: "apos as 14h", "depois das 14h", "a partir de 14h"
     m = re.search(r"\b(?:apos|depois d[ao]s?|a partir d[ae]s?)\s+(?:as\s+)?" + _HORA, t)
