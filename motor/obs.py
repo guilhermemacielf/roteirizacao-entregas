@@ -84,10 +84,28 @@ def extrair_janela(texto: str, base: int = HORA_BASE_MIN) -> tuple[int | None, i
         if ini is not None:
             inicio = max(0, ini)
 
-    # 4. Período do dia — só se nada mais foi encontrado
+    # 4. Período do dia — só se nada mais foi encontrado.
+    # Combinacoes ESPECIFICAS antes das genericas pra "inicio da manha" nao
+    # cair em "manha" generico.
     if inicio is None and fim is None:
-        if re.search(r"\b(de manha|pela manha|manha)\b", t):
-            fim = max(1, 12 * 60 - base)        # até o meio-dia
+        # Inicio da manha / cedo / primeira hora — ate 10h (fim=60)
+        if re.search(r"\b(?:inicio|comeco|primeira hora|primeiro horario)\b[^.]{0,40}\bmanha\b", t):
+            fim = 60
+        elif re.search(r"\b(?:bem cedo|cedinho|logo cedo|manha cedo|cedo)\b", t):
+            fim = 60
+        # Final / fim da manha — entre 10h e 12h
+        elif re.search(r"\b(?:final|fim) da manha\b", t):
+            inicio, fim = 60, 180
+        # Final / fim da tarde — depois das 16h (inicio=7h apos 9h CD)
+        elif re.search(r"\b(?:final|fim) da tarde\b", t):
+            inicio = 7 * 60
+        # Inicio / comeco da tarde — entre 12h e 14h
+        elif re.search(r"\b(?:inicio|comeco)\b[^.]{0,40}\btarde\b", t):
+            inicio, fim = 3 * 60, 5 * 60
+        # Manha generica — ate meio-dia
+        elif re.search(r"\b(de manha|pela manha|manha)\b", t):
+            fim = max(1, 12 * 60 - base)
+        # Tarde generica — depois do meio-dia
         elif re.search(r"\b(a tarde|de tarde|tarde)\b", t):
             inicio = max(0, 12 * 60 - base)
 
