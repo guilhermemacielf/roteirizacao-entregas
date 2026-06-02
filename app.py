@@ -365,6 +365,144 @@ def _entrega_de_parada(p: dict) -> Entrega:
     )
 
 
+@app.route("/api/rotear/trocar-entregador", methods=["POST"])
+def api_rotear_trocar_entregador():
+    """Troca o entregador de UMA rota mantendo a sequencia de paradas.
+    Se o entregador novo ja esta em outra rota, faz SWAP entre as duas.
+    Recompute distancia/duracao/geometria via OSRM nas rotas afetadas
+    (so o ponto final muda).
+
+    Body:
+      {
+        "rota_idx": 2,
+        "entregador_novo": {id, nome, lat, lng, preferencias?},
+        "rotas":   [...estado atual],
+        "cd":      {nome, lat, lng}
+      }
+    Resposta: mesmo formato de /api/rotear.
+    """
+    d = request.get_json(silent=True) or {}
+    rotas_in = d.get("rotas") or []
+    cd_dict = d.get("cd") or {}
+    ent_novo_dict = d.get("entregador_novo") or {}
+    try:
+        rota_idx = int(d.get("rota_idx"))
+        cd = CD(lat=float(cd_dict["lat"]), lng=float(cd_dict["lng"]),
+                nome=cd_dict.get("nome", "CD"))
+    except (TypeError, ValueError, KeyError):
+        return jsonify({"erro": "rota_idx ou cd invalidos"}), 400
+    if rota_idx < 0 or rota_idx >= len(rotas_in):
+        return jsonify({"erro": "rota_idx fora do range"}), 400
+    if rotas_in[rota_idx].get("candidata_lalamove"):
+        return jsonify({"erro": "rota Lalamove nao tem entregador atribuido"}), 400
+    try:
+        ent_novo_id = str(ent_novo_dict["id"])
+        ent_novo_payload = {
+            "id":   ent_novo_id,
+            "nome": ent_novo_dict["nome"],
+            "lat":  float(ent_novo_dict["lat"]),
+            "lng":  float(ent_novo_dict["lng"]),
+        }
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"erro": "entregador_novo precisa de id/nome/lat/lng"}), 400
+
+    # Procura se o novo ja esta em outra rota — sera SWAP
+    rotas_nova = [dict(r) for r in rotas_in]
+    rota_alvo = rotas_nova[rota_idx]
+    ent_atual = rota_alvo.get("entregador") or {}
+    swap_idx = None
+    for i, r in enumerate(rotas_nova):
+        if i == rota_idx:
+            continue
+        e = r.get("entregador") or {}
+        if str(e.get("id")) == ent_novo_id:
+            swap_idx = i
+            break
+
+    # Aplica a troca
+    rota_alvo["entregador"] = ent_novo_payload
+    afetadas = [rota_idx]
+    if swap_idx is not None and ent_atual:
+        try:
+            rotas_nova[swap_idx]["entregador"] = {
+                "id":   str(ent_atual["id"]),
+                "nome": ent_atual["nome"],
+                "lat":  float(ent_atual["lat"]),
+                "lng":  float(ent_atual["lng"]),
+            }
+            afetadas.append(swap_idx)
+        except (KeyError, TypeError, ValueError):
+            pass   # nao bloqueia se atual estiver mal formado
+
+    # Recompute distancia/duracao/geometria das afetadas
+    from motor.matriz import rota_geometria
+    SERVICO = 600
+    for idx in afetadas:
+        r = rotas_nova[idx]
+        ent = r.get("entregador") or {}
+        paradas = r.get("paradas") or []
+        if not paradas or not ent:
+            continue
+        coords = [(cd.lat, cd.lng)] + [(float(p["lat"]), float(p["lng"])) for p in paradas]
+        coords.append((float(ent["lat"]), float(ent["lng"])))
+        try:
+            mat = osrm_matriz(coords)
+        except MatrizError as e:
+            return jsonify({"erro": f"OSRM falhou: {e}"}), 502
+        dist_total = 0
+        tempo_acum_s = 0
+        novas_paradas = []
+        for i, p in enumerate(paradas):
+            idx_mat = i + 1
+            dist_total += mat["distancia"][idx_mat - 1][idx_mat]
+            tempo_acum_s += mat["duracao"][idx_mat - 1][idx_mat]
+            novas_paradas.append({
+                **p,
+                "ordem": i + 1,
+                "chegada_estimada_s": int(tempo_acum_s),
+            })
+            tempo_acum_s += SERVICO
+        idx_fim = len(paradas) + 1
+        dist_total += mat["distancia"][idx_fim - 1][idx_fim]
+        tempo_acum_s += mat["duracao"][idx_fim - 1][idx_fim]
+        try:
+            geom = rota_geometria(coords)
+        except Exception:
+            geom = [[lat, lng] for lat, lng in coords]
+        r["paradas"] = novas_paradas
+        r["distancia_km"] = round(dist_total / 1000, 2)
+        r["duracao_s"] = int(tempo_acum_s)
+        r["n_paradas"] = len(novas_paradas)
+        r["geometry"] = [[lat, lng] for lat, lng in geom]
+
+    # Recalcula pagamento
+    try:
+        valores = json.load(open(os.path.join(BASE_DIR, "dados", "valores.json"),
+                                  encoding="utf-8"))
+        rotas_nova = calcular_valor_todas(rotas_nova, valores)
+    except Exception as e:
+        log.warning("nao recalculou pagamento na troca entregador: %s", e)
+
+    n_normais = sum(1 for r in rotas_nova if not r.get("candidata_lalamove"))
+    n_lala = sum(1 for r in rotas_nova if r.get("candidata_lalamove"))
+    total_km = sum(r.get("distancia_km", 0) for r in rotas_nova)
+    pagamento_total = sum(
+        (r.get("pagamento") or {}).get("valor_total", 0)
+        for r in rotas_nova if not r.get("candidata_lalamove")
+    )
+    return jsonify({
+        "cd": {"lat": cd.lat, "lng": cd.lng, "nome": cd.nome},
+        "rotas": rotas_nova,
+        "resumo": {
+            "n_rotas":              len(rotas_nova),
+            "n_rotas_entregadores": n_normais,
+            "n_rotas_lalamove":     n_lala,
+            "total_km":             round(total_km, 1),
+        },
+        "pagamento_total": round(pagamento_total, 2),
+    })
+
+
 @app.route("/api/rotear/reordenar", methods=["POST"])
 def api_rotear_reordenar():
     """Reordena MANUALMENTE as paradas de UMA rota mantendo o entregador.

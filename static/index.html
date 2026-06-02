@@ -847,6 +847,13 @@ function hms(s) {
 
 // ── Render: lista de rotas ────────────────────────────────
 function renderResultado() {
+  // Preserva quais cards estavam abertos antes do re-render (reorder/troca
+  // entregador chamam isso e o usuario nao quer perder o estado expandido).
+  const abertasPrevias = new Set();
+  document.querySelectorAll('.rota-card.aberta').forEach(el => {
+    const m = el.id.match(/rcard-(\d+)/);
+    if (m) abertasPrevias.add(parseInt(m[1]));
+  });
   const d = S.resultado;
   const res = d.resumo;
   // Resumo principal: separa entregadores de Lalamove pra ficar claro
@@ -905,17 +912,97 @@ function renderResultado() {
            ${pag.memoria.map(l => l.startsWith('TOTAL') ? `<b style="color:#15803d">${l}</b>` : l).join('<br>')}
          </div>`
       : '';
+    // Botao trocar entregador (so pra rotas normais, nao Lalamove)
+    const btnTrocar = r.candidata_lalamove
+      ? ''
+      : `<button class="btn-trocar-ent" data-rota="${i}"
+                  title="Trocar entregador desta rota"
+                  onclick="event.stopPropagation();abrirTrocaEntregador(${i})"
+                  style="border:none;background:none;cursor:pointer;font-size:13px;
+                         padding:2px 6px;color:var(--hint)">🔄</button>`;
     return `<div class="rota-card" id="rcard-${i}" onclick="toggleRota(${i})">
       <div class="rota-head">
         <div class="barra" style="background:${cor}"></div>
-        <div class="nome">${quem}</div>
+        <div class="nome">${quem}${btnTrocar}</div>
         <div class="meta">${r.n_paradas} entregas<br>${r.distancia_km} km · ${hms(r.duracao_s)}${metaPag}</div>
       </div>
       <div class="rota-paradas">${paradas || '<i>sem paradas</i>'}${memoria}</div>
     </div>`;
   }).join('');
   document.getElementById('resultado').innerHTML = html;
+  // Restaura cards abertos
+  abertasPrevias.forEach(i => document.getElementById('rcard-' + i)?.classList.add('aberta'));
   ligarDragDropParadas();
+}
+
+// ── Trocar entregador de uma rota ─────────────────────────────
+function abrirTrocaEntregador(rotaIdx) {
+  if (!S.resultado || !S.config) return;
+  const rota = S.resultado.rotas[rotaIdx];
+  if (!rota || rota.candidata_lalamove) return;
+  const entAtualId = rota.entregador?.id;
+  // Lista de entregadores disponiveis (filtra o atual)
+  const opts = S.config.entregadores
+    .filter(e => e.id !== entAtualId)
+    .map(e => `<option value="${e.id}">${e.nome}</option>`).join('');
+  if (!opts) return toast('Sem outros entregadores ativos pra trocar');
+  // Cria um popup com select. Posiciona perto do botao clicado.
+  const card = document.getElementById('rcard-' + rotaIdx);
+  const rect = card.getBoundingClientRect();
+  // Remove popup anterior se houver
+  document.getElementById('popup-troca-ent')?.remove();
+  const pop = document.createElement('div');
+  pop.id = 'popup-troca-ent';
+  pop.style.cssText = `position:absolute;left:${rect.right + 8}px;top:${rect.top + 4}px;
+    background:white;border:1px solid var(--border);border-radius:6px;
+    padding:8px;box-shadow:0 2px 8px rgba(0,0,0,.15);z-index:9999`;
+  pop.innerHTML = `
+    <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Trocar para:</div>
+    <select id="sel-troca-ent" style="width:100%;padding:4px;font-size:12px">${opts}</select>
+    <div style="display:flex;gap:4px;margin-top:6px">
+      <button class="btn btn-sm btn-azul" onclick="confirmarTrocaEntregador(${rotaIdx})">Trocar</button>
+      <button class="btn btn-sm" onclick="document.getElementById('popup-troca-ent').remove()">Cancelar</button>
+    </div>
+    <div style="font-size:10px;color:var(--hint);margin-top:4px;max-width:200px">
+      Se o entregador escolhido ja esta em outra rota, faz <b>swap</b>.
+    </div>`;
+  document.body.appendChild(pop);
+  // Fecha quando clicar fora
+  setTimeout(() => {
+    const close = (ev) => {
+      if (!pop.contains(ev.target)) { pop.remove(); document.removeEventListener('click', close); }
+    };
+    document.addEventListener('click', close);
+  }, 100);
+}
+
+async function confirmarTrocaEntregador(rotaIdx) {
+  const sel = document.getElementById('sel-troca-ent');
+  if (!sel) return;
+  const novoId = sel.value;
+  const entNovo = S.config.entregadores.find(e => e.id === novoId);
+  if (!entNovo) return toast('Entregador nao encontrado');
+  document.getElementById('popup-troca-ent')?.remove();
+  toast('Recalculando rota com novo entregador…');
+  try {
+    const r = await fetch('/api/rotear/trocar-entregador', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        rota_idx: rotaIdx,
+        entregador_novo: entNovo,
+        rotas: S.resultado.rotas,
+        cd: S.resultado.cd,
+      }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.erro || 'falha ao trocar entregador');
+    S.resultado = d;
+    renderResultado();
+    desenharRotas(d);
+    toast('✓ entregador atualizado');
+  } catch (e) {
+    toast('Erro: ' + e.message);
+  }
 }
 
 // ── Drag-and-drop pra reordenar paradas DENTRO de uma rota ──────
