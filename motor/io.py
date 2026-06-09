@@ -25,7 +25,7 @@ import requests
 from motor.modelos import Entrega, Entregador, CD, Rota
 from motor.geocode import geocodificar_lista, _extrair_bairro_cidade
 from motor.obs import extrair_janela
-from motor.matriz import rota_geometria
+from motor.matriz import rota_geometria, rota_completa
 
 log = logging.getLogger(__name__)
 
@@ -323,7 +323,20 @@ def rotas_para_dict(rotas: list[Rota], cd: CD) -> dict:
             seq = ([(cd.lat, cd.lng)]
                    + [(p.entrega.lat, p.entrega.lng) for p in r.paradas]
                    + [(ent.lat, ent.lng)])
-        geom = rota_geometria(seq)
+        # Pega geometria + distancia/duracao REAIS do mesmo OSRM /route.
+        # Sem isso, distancia_km vinha do TSP (soma de /table que sao
+        # aproximacoes) e divergia da polyline desenhada no mapa.
+        rota_data = rota_completa(seq)
+        geom = rota_data["geometry"]
+        # Se OSRM respondeu, sobrescreve com valores reais; senao mantem
+        # os do TSP (fallback). Tempo total = deslocamento OSRM +
+        # 10min/parada de servico (TSP ja considera, /route nao).
+        if rota_data["ok"] and rota_data["distance_m"] > 0:
+            dist_m_final = rota_data["distance_m"]
+            dur_s_final = rota_data["duration_s"] + r.n_paradas * 600
+        else:
+            dist_m_final = r.distancia_m
+            dur_s_final = r.duracao_s
 
         rotas_json.append({
             "entregador": None if ent is None else {
@@ -331,8 +344,8 @@ def rotas_para_dict(rotas: list[Rota], cd: CD) -> dict:
             },
             "candidata_lalamove": bool(r.candidata_lalamove),
             "n_paradas":     r.n_paradas,
-            "distancia_km":  round(r.distancia_m / 1000, 2),
-            "duracao_s":     int(r.duracao_s),
+            "distancia_km":  round(dist_m_final / 1000, 2),
+            "duracao_s":     int(dur_s_final),
             "geometry":      [[lat, lng] for lat, lng in geom],
             "paradas": [
                 {

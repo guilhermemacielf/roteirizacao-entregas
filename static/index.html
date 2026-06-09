@@ -998,7 +998,13 @@ async function confirmarTrocaEntregador(rotaIdx) {
     if (!r.ok) throw new Error(d.erro || 'falha ao trocar entregador');
     S.resultado = d;
     renderResultado();
-    desenharRotas(d);
+    // Preserva foco visual (rota selecionada) e desenha so ela se estava em foco
+    if (S.rotaFoco !== null) {
+      document.getElementById('rcard-' + S.rotaFoco)?.classList.add('foco');
+      desenharRotas(S.rotaFoco, true);   // preservarZoom = nao re-fitar
+    } else {
+      desenharRotas();
+    }
     toast('✓ entregador atualizado');
   } catch (e) {
     toast('Erro: ' + e.message);
@@ -1082,7 +1088,14 @@ async function reordenarPara(rotaIdx, pidArrastado, pidDestino) {
     // Substitui o estado e re-renderiza
     S.resultado = d;
     renderResultado(d);
-    desenharRotas(d);
+    // Preserva foco visual (rota selecionada) — usuario costuma reordenar
+    // varias entregas seguidas na mesma rota.
+    if (S.rotaFoco !== null) {
+      document.getElementById('rcard-' + S.rotaFoco)?.classList.add('foco');
+      desenharRotas(S.rotaFoco, true);
+    } else {
+      desenharRotas();
+    }
     toast('✓ ordem atualizada');
   } catch (e) {
     toast(`Erro: ${e.message}`);

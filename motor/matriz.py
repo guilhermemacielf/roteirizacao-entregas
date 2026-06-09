@@ -94,20 +94,28 @@ def matriz(coords: list[tuple[float, float]], perfil: str = "driving") -> dict:
     }
 
 
-def rota_geometria(coords: list[tuple[float, float]],
-                   perfil: str = "driving") -> list[tuple[float, float]]:
-    """Pega uma sequência ordenada de (lat, lng) e devolve a polyline real
-    da rota completa (CD → p1 → p2 → ... → casa) seguindo as ruas via OSRM.
+def rota_completa(coords: list[tuple[float, float]],
+                  perfil: str = "driving") -> dict:
+    """Pega uma sequência ordenada de (lat, lng) e devolve o trajeto OSRM
+    completo: geometria (polyline densa) + distancia real + duracao real.
 
-    Retorna lista de (lat, lng) interpolados — bem mais densa que a entrada,
-    representando a geometria real das ruas. Pra desenhar no mapa Leaflet,
-    o front passa direto pra L.polyline.
+    Retorno:
+        {
+            "geometry":   [(lat, lng), ...],   # polyline interpolada das ruas
+            "distance_m": int,                  # distancia total em metros
+            "duration_s": int,                  # tempo de deslocamento em segundos
+            "ok": bool,                          # False se caiu pro fallback
+        }
 
-    Em caso de erro de rede ou OSRM, devolve linha reta (lista original) —
-    o motor continua funcionando, só perde a geometria bonita.
+    O importante: `distance_m` aqui bate EXATAMENTE com a polyline desenhada
+    (vem do mesmo OSRM /route). Diferente de matriz()/table, que retorna
+    aproximacoes entre pares.
+
+    Em caso de erro de rede ou OSRM, fallback com geometria linha-reta e
+    distancia/duracao=0 (chamador decide o que fazer).
     """
     if len(coords) < 2:
-        return list(coords)
+        return {"geometry": list(coords), "distance_m": 0, "duration_s": 0, "ok": False}
     pares = ";".join(f"{lng},{lat}" for lat, lng in coords)
     url = f"{OSRM_URL}/route/v1/{perfil}/{pares}"
     params = {"overview": "full", "geometries": "geojson", "steps": "false"}
@@ -117,12 +125,33 @@ def rota_geometria(coords: list[tuple[float, float]],
         data = r.json()
         if data.get("code") != "Ok":
             raise MatrizError(f"OSRM /route code={data.get('code')}")
-        # GeoJSON LineString: coordinates é [[lng, lat], ...]
-        coords_geojson = data["routes"][0]["geometry"]["coordinates"]
-        return [(lat, lng) for lng, lat in coords_geojson]
+        rota = data["routes"][0]
+        coords_geojson = rota["geometry"]["coordinates"]
+        legs = [
+            {
+                "distance_m": int(l.get("distance") or 0),
+                "duration_s": int(l.get("duration") or 0),
+            }
+            for l in (rota.get("legs") or [])
+        ]
+        return {
+            "geometry":   [(lat, lng) for lng, lat in coords_geojson],
+            "distance_m": int(rota.get("distance") or 0),
+            "duration_s": int(rota.get("duration") or 0),
+            "legs":       legs,   # N-1 legs pra N coords (CD->p1, p1->p2, ..., pN-1->casa)
+            "ok": True,
+        }
     except (requests.RequestException, MatrizError, KeyError, IndexError) as e:
-        log.warning("falha em rota_geometria, fallback pra linha reta: %s", e)
-        return list(coords)
+        log.warning("falha em rota_completa, fallback pra linha reta: %s", e)
+        return {"geometry": list(coords), "distance_m": 0, "duration_s": 0, "legs": [], "ok": False}
+
+
+def rota_geometria(coords: list[tuple[float, float]],
+                   perfil: str = "driving") -> list[tuple[float, float]]:
+    """Wrapper retrocompativel — devolve so a geometria. Internamente usa
+    rota_completa. Novos chamadores devem usar rota_completa diretamente
+    pra ter distance/duration tambem."""
+    return rota_completa(coords, perfil)["geometry"]
 
 
 if __name__ == "__main__":

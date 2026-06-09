@@ -435,7 +435,7 @@ def api_rotear_trocar_entregador():
             pass   # nao bloqueia se atual estiver mal formado
 
     # Recompute distancia/duracao/geometria das afetadas
-    from motor.matriz import rota_geometria
+    from motor.matriz import rota_completa
     SERVICO = 600
     for idx in afetadas:
         r = rotas_nova[idx]
@@ -445,35 +445,32 @@ def api_rotear_trocar_entregador():
             continue
         coords = [(cd.lat, cd.lng)] + [(float(p["lat"]), float(p["lng"])) for p in paradas]
         coords.append((float(ent["lat"]), float(ent["lng"])))
-        try:
-            mat = osrm_matriz(coords)
-        except MatrizError as e:
-            return jsonify({"erro": f"OSRM falhou: {e}"}), 502
-        dist_total = 0
+        # 1 unica chamada OSRM /route — devolve geometria + legs + totais.
+        # Antes era matriz + rota_geometria (2 chamadas, valores divergiam).
+        rdat = rota_completa(coords)
+        if not rdat["ok"]:
+            return jsonify({"erro": "OSRM /route falhou"}), 502
+        legs = rdat["legs"]
+        # legs[i] eh o trecho coords[i] -> coords[i+1].
+        # Pra paradas[i], chegada = sum(durations dos legs 0..i) + i*servico
         tempo_acum_s = 0
         novas_paradas = []
         for i, p in enumerate(paradas):
-            idx_mat = i + 1
-            dist_total += mat["distancia"][idx_mat - 1][idx_mat]
-            tempo_acum_s += mat["duracao"][idx_mat - 1][idx_mat]
+            tempo_acum_s += legs[i]["duration_s"]
             novas_paradas.append({
                 **p,
                 "ordem": i + 1,
                 "chegada_estimada_s": int(tempo_acum_s),
             })
             tempo_acum_s += SERVICO
-        idx_fim = len(paradas) + 1
-        dist_total += mat["distancia"][idx_fim - 1][idx_fim]
-        tempo_acum_s += mat["duracao"][idx_fim - 1][idx_fim]
-        try:
-            geom = rota_geometria(coords)
-        except Exception:
-            geom = [[lat, lng] for lat, lng in coords]
+        # Tempo total inclui leg final (ate casa) + ultimo servico que ja foi
+        # somado. Tira o ultimo servico (so conta na chegada da casa, nao apos).
+        tempo_total_s = rdat["duration_s"] + len(paradas) * SERVICO
         r["paradas"] = novas_paradas
-        r["distancia_km"] = round(dist_total / 1000, 2)
-        r["duracao_s"] = int(tempo_acum_s)
+        r["distancia_km"] = round(rdat["distance_m"] / 1000, 2)
+        r["duracao_s"] = int(tempo_total_s)
         r["n_paradas"] = len(novas_paradas)
-        r["geometry"] = [[lat, lng] for lat, lng in geom]
+        r["geometry"] = [[lat, lng] for lat, lng in rdat["geometry"]]
 
     # Recalcula pagamento
     try:
@@ -545,51 +542,37 @@ def api_rotear_reordenar():
     if ent_dict and not eh_lalamove:
         coords.append((float(ent_dict["lat"]), float(ent_dict["lng"])))
 
-    try:
-        mat = osrm_matriz(coords)
-    except MatrizError as e:
-        return jsonify({"erro": f"OSRM falhou: {e}"}), 502
+    # 1 chamada OSRM /route — devolve geometria + legs + totais reais.
+    # Os totais BATEM com a polyline desenhada no mapa (mesma fonte).
+    from motor.matriz import rota_completa
+    rdat = rota_completa(coords)
+    if not rdat["ok"]:
+        return jsonify({"erro": "OSRM /route falhou"}), 502
+    legs = rdat["legs"]
 
-    # Caminha pela sequencia somando distancia + tempo. Cada parada gasta
-    # 600s (10min) de servico antes de avancar.
+    # Cumulativo: chegada na parada i = soma das duracoes dos legs 0..i
+    # + i × SERVICO (10min/parada antes de avancar).
     SERVICO = 600
-    dist_total = 0
     tempo_acum_s = 0
     paradas_nova = []
     for i, p in enumerate(nova_seq):
-        idx_atual = i           # CD eh 0, parada i fica em pos i+1, mas mat dist[from][to] usa indices da coords
-        idx_no_mat = i + 1
-        idx_anterior = idx_no_mat - 1
-        dist_step = mat["distancia"][idx_anterior][idx_no_mat]
-        dur_step  = mat["duracao"][idx_anterior][idx_no_mat]
-        dist_total += dist_step
-        tempo_acum_s += dur_step
+        tempo_acum_s += legs[i]["duration_s"]
         paradas_nova.append({
             **p,
             "ordem": i + 1,
             "chegada_estimada_s": int(tempo_acum_s),
         })
-        tempo_acum_s += SERVICO   # servico depois da chegada
+        tempo_acum_s += SERVICO
 
-    # Trecho final ate casa (se entregador real)
-    if ent_dict and not eh_lalamove:
-        idx_fim = len(nova_seq) + 1
-        dist_total += mat["distancia"][idx_fim - 1][idx_fim]
-        tempo_acum_s += mat["duracao"][idx_fim - 1][idx_fim]
-
-    # Geometria nova das ruas (linha do mapa)
-    from motor.matriz import rota_geometria
-    try:
-        geom = rota_geometria(coords)
-    except Exception:
-        geom = [[lat, lng] for lat, lng in coords]   # fallback linha reta
+    # Tempo total da rota = deslocamento OSRM + servico em cada parada
+    tempo_total_s = rdat["duration_s"] + len(nova_seq) * SERVICO
 
     rota_nova = dict(rota)
     rota_nova["paradas"] = paradas_nova
-    rota_nova["distancia_km"] = round(dist_total / 1000, 2)
-    rota_nova["duracao_s"] = int(tempo_acum_s)
+    rota_nova["distancia_km"] = round(rdat["distance_m"] / 1000, 2)
+    rota_nova["duracao_s"] = int(tempo_total_s)
     rota_nova["n_paradas"] = len(paradas_nova)
-    rota_nova["geometry"] = [[lat, lng] for lat, lng in geom]
+    rota_nova["geometry"] = [[lat, lng] for lat, lng in rdat["geometry"]]
 
     rotas_nova = list(rotas_in)
     rotas_nova[rota_idx] = rota_nova
