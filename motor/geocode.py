@@ -45,7 +45,12 @@ CACHE_PATH = os.environ.get(
     os.path.join(os.path.dirname(__file__), "..", "dados", "geocode.cache.json"),
 )
 PAUSA_S = 1.5  # respeita o limite de ~1 req/s do Nominatim público (com folga)
-MAX_RETRY_429 = 3  # tentativas em 429 (com backoff exponencial)
+# Tentativas em 429 com backoff exponencial. Em rodadas pesadas (purga em
+# lote), o Nominatim publico rate-limita feio e cada retry custa
+# 5+10+20s = 35s. Setar NOMINATIM_MAX_RETRY=1 (so 1 tentativa, sem retry)
+# faz falhar rapido e cair pro Google Maps no fallback — bem mais eficiente
+# quando GOOGLE_MAPS_API_KEY ta setada.
+MAX_RETRY_429 = int(os.environ.get("NOMINATIM_MAX_RETRY", "3"))
 
 # Cidades da região metropolitana de BH (pra detectar o sufixo do endereço).
 # Lista pequena de propósito — adiciona conforme aparecer endereço de fora.

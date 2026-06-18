@@ -30,6 +30,7 @@ services:
     environment:
       - OSRM_URL=http://osrm:5000
       - GOOGLE_MAPS_API_KEY=${GOOGLE_MAPS_API_KEY:-}
+      - NOMINATIM_MAX_RETRY=${NOMINATIM_MAX_RETRY:-3}
       - GOOGLE_SHEETS_OAUTH_CLIENT_FILE=/app/oauth_client.json
       - GOOGLE_SHEETS_SA_FILE=/app/sa.json
       - BASIC_AUTH_USER=${BASIC_AUTH_USER:-}
