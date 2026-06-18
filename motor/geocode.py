@@ -602,29 +602,45 @@ def _consultar_em_cascata(endereco: str) -> tuple[float, float] | None:
 
     cep = _extrair_cep(endereco)
 
-    # 1. Nominatim — variações v1 (rua completa) e v2 (sem bairro).
-    # Pula v3 (só CEP) por enquanto; Google Maps tem chance melhor.
-    # GeocodeError em UMA variação não derruba a cascade.
-    nominatim_v1_v2 = [v for v in variacoes
-                       if not (cep is not None and v.startswith(cep))]
-    for i, v in enumerate(nominatim_v1_v2):
-        try:
-            coord = _consultar_nominatim(v)
-        except GeocodeError as e:
-            log.warning("Nominatim falhou em variação %d (%s): %s", i, v[:50], e)
-            coord = None
-        time.sleep(PAUSA_S)
-        if coord is not None:
-            return coord
+    # Variações do Nominatim (tira a v3 só-CEP). A 1ª (v1) inclui o BAIRRO; as demais
+    # (v2) são SEM bairro — e SEM bairro o Nominatim casa RUA HOMÔNIMA em outro ponto
+    # da cidade (ex.: "Felipe Drumond" no Lajedo/norte em vez do Luxemburgo/sul). Por
+    # isso a v2 só é tentada DEPOIS do Google (que é mais preciso e não cai no homônimo).
+    nominatim_vars = [v for v in variacoes
+                      if not (cep is not None and v.startswith(cep))]
+    nominatim_v1 = nominatim_vars[:1]   # rua + BAIRRO (precisa)
+    nominatim_v2 = nominatim_vars[1:]   # rua SEM bairro (arriscada: rua homônima)
 
-    # 2. Google Maps — fallback preciso pra endereços com ruído que
-    # confundem o Nominatim (complementos não-padrão, referências
-    # embutidas, etc.). Só dispara se GOOGLE_MAPS_API_KEY setada.
+    def _tentar_nominatim(lista):
+        for v in lista:
+            try:
+                coord = _consultar_nominatim(v)
+            except GeocodeError as e:
+                log.warning("Nominatim falhou em variação (%s): %s", v[:50], e)
+                coord = None
+            time.sleep(PAUSA_S)
+            if coord is not None:
+                return coord
+        return None
+
+    # 1. Nominatim v1 (rua + BAIRRO) — preciso quando o endereço está limpo.
+    coord = _tentar_nominatim(nominatim_v1)
+    if coord is not None:
+        return coord
+
+    # 2. Google Maps — ANTES da v2 sem bairro: resolve ruído/erro de digitação
+    # (ex.: "Drumond" x "Drummond") e NÃO cai em rua homônima. Só com a chave setada.
     if GOOGLE_MAPS_API_KEY:
         coord = _consultar_google_maps(endereco)
         if coord is not None:
             log.info("geocode via Google Maps: %s", endereco)
             return coord
+
+    # 3. Nominatim v2 (rua SEM bairro) — só agora, como fallback (pode cair em rua
+    # homônima; por isso vem DEPOIS do Google).
+    coord = _tentar_nominatim(nominatim_v2)
+    if coord is not None:
+        return coord
 
     # 3. Nominatim v3 (só CEP) — valida postcode pra evitar fallback BH
     if cep:
