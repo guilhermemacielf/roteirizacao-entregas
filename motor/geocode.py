@@ -256,10 +256,18 @@ def _gerar_variacoes(endereco: str) -> list[str]:
     cep_match = re.search(r"\b(\d{5})-?(\d{3})\b", s_limpo)
     cep = f"{cep_match.group(1)}-{cep_match.group(2)}" if cep_match else None
 
-    # Extrai cidade (último match conhecido na string)
+    # Extrai cidade — primeiro tira UF/CEP do fim ("...Nova Lima MG 34006-043"
+    # vira "...Nova Lima") pra a regex ancorada no fim conseguir achar
+    # cidades diferentes de Belo Horizonte. Sem isso, todo endereco fora de
+    # BH caia no fallback "Belo Horizonte".
+    s_pra_cidade = _strip_uf_cep_fim(s_limpo)
+    # Match acento-insensitivo: compara versao sem acento (Instabuy as vezes
+    # vem "Sabara" sem acento; sem isso, "Sabará" da lista nao casa).
+    s_norm = _sem_acento(s_pra_cidade)
     cidade = None
     for c in CIDADES:
-        if re.search(r"\b" + re.escape(c) + r"\b\s*$", s_limpo, flags=re.IGNORECASE):
+        if re.search(r"\b" + re.escape(_sem_acento(c)) + r"\b\s*$",
+                     s_norm, flags=re.IGNORECASE):
             cidade = c
             break
     cidade = cidade or "Belo Horizonte"
@@ -268,8 +276,19 @@ def _gerar_variacoes(endereco: str) -> list[str]:
     nucleo = s_limpo
     if cep_match:
         nucleo = nucleo[:cep_match.start()] + " " + nucleo[cep_match.end():]
+    # Remove cidade (em qualquer posicao perto do fim, nao so ancorada
+    # estritamente — UF/CEP entre cidade e fim ja foram limpos acima).
+    # Acento-insensitivo: usa pattern que casa com e sem acento.
+    nucleo = _strip_uf_cep_fim(nucleo)
     for c in CIDADES:
-        nucleo = re.sub(r"\b" + re.escape(c) + r"\b\s*$", "", nucleo, flags=re.IGNORECASE)
+        pat = re.escape(_sem_acento(c))
+        # substitui na versao sem-acento mas guarda os indices pra cortar
+        # a string original. Mais simples: roda re.sub na string normalizada
+        # e ao mesmo tempo na original com o mesmo offset.
+        nucleo_norm = _sem_acento(nucleo)
+        m = re.search(r"\b" + pat + r"\b\s*$", nucleo_norm, flags=re.IGNORECASE)
+        if m:
+            nucleo = nucleo[:m.start()].rstrip(" ,;")
     nucleo = re.sub(r"\s+", " ", nucleo).strip(" ,;")
 
     # Tenta separar "rua/número" do "bairro" pelo primeiro número de prédio
@@ -493,6 +512,37 @@ def _extrair_cep(endereco: str) -> str | None:
     return f"{m.group(1)}-{m.group(2)}" if m else None
 
 
+# Padrao "MG"/"Minas Gerais" + CEP no fim — Instabuy gera
+# "<rua> <num> <bairro> <CIDADE> <UF> <CEP>" e a deteccao da cidade
+# precisa que UF + CEP estejam fora pra ancorar a cidade no fim.
+_UF_CEP_FIM_RE = re.compile(
+    r"\s*[,;.\-]?\s*(?:mg|minas gerais)\b\s*[,;.\-]?\s*"
+    r"(?:\d{5}-?\d{3})?\s*$",
+    flags=re.IGNORECASE,
+)
+
+
+def _sem_acento(s: str) -> str:
+    return unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode("ascii")
+
+
+def _strip_uf_cep_fim(s: str) -> str:
+    """Remove do FIM da string o UF (MG/Minas Gerais) + CEP se estiverem
+    la. Sem isso, '... Nova Lima MG 34006-043' nao casa com a regex de
+    cidade ancorada em '\\s*$' e cai no fallback 'Belo Horizonte'.
+
+    Aplica em loop pra cobrir variantes ('Nova Lima, MG' + '34006-043',
+    'Nova Lima 34006-043 MG', etc).
+    """
+    prev = None
+    while s != prev:
+        prev = s
+        s = _UF_CEP_FIM_RE.sub("", s).rstrip(" ,;.-")
+        # Tenta remover CEP solto no fim
+        s = re.sub(r"\s*[,;.\-]?\s*\b\d{5}-?\d{3}\b\s*$", "", s).rstrip(" ,;.-")
+    return s
+
+
 def _extrair_bairro_cidade(endereco: str) -> tuple[str | None, str]:
     """Pega o bairro (token entre número e CEP/cidade) e a cidade do
     endereço bruto. Heurística simples — usada só pro fallback do
@@ -502,14 +552,22 @@ def _extrair_bairro_cidade(endereco: str) -> tuple[str | None, str]:
     s = _COMPLEMENTO_RE.sub(" ", s)
     s = _REFERENCIA_RE.sub(" ", s)
 
-    # Cidade no fim
+    # Cidade no fim — primeiro tira UF/CEP pra cidade ficar ancorada no fim
+    # ("...Nova Lima MG 34006-043" vira "...Nova Lima"). Sem isso, todo
+    # endereco fora de BH caia no default "Belo Horizonte".
+    # Match tambem acento-insensitivo ("Sabara" sem acento na string casa
+    # com "Sabará" da lista CIDADES).
+    s = _strip_uf_cep_fim(s)
     cidade = "Belo Horizonte"
     for c in CIDADES:
-        if re.search(r"\b" + re.escape(c) + r"\b\s*$", s, flags=re.IGNORECASE):
+        s_norm = _sem_acento(s)
+        m = re.search(r"\b" + re.escape(_sem_acento(c)) + r"\b\s*$",
+                      s_norm, flags=re.IGNORECASE)
+        if m:
             cidade = c
-            s = re.sub(r"\b" + re.escape(c) + r"\b\s*$", "", s, flags=re.IGNORECASE)
+            s = s[:m.start()].rstrip(" ,;")
             break
-    # Remove CEP
+    # Remove CEP (pode sobrar algum CEP fora do padrao do _strip_uf_cep_fim)
     cep_m = re.search(r"\b\d{5}-?\d{3}\b", s)
     if cep_m:
         s = s[:cep_m.start()] + " " + s[cep_m.end():]
