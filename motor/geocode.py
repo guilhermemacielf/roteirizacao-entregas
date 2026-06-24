@@ -23,6 +23,7 @@ subir um Nominatim self-hosted (NOMINATIM_URL).
 
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -51,6 +52,19 @@ PAUSA_S = 1.5  # respeita o limite de ~1 req/s do Nominatim público (com folga)
 # faz falhar rapido e cair pro Google Maps no fallback — bem mais eficiente
 # quando GOOGLE_MAPS_API_KEY ta setada.
 MAX_RETRY_429 = int(os.environ.get("NOMINATIM_MAX_RETRY", "3"))
+
+# ── Validacao geografica (anti rua-homonima de OUTRA cidade) ──────────
+# Todas as entregas sao na Regiao Metropolitana de BH. Um endereco que
+# geocodifica para um ponto a mais de MAX_RAIO_KM do centro de BH e quase
+# sempre rua homonima em outra cidade (ex.: "Rua Goias" tambem existe em
+# Divinopolis, ~100km) — um provedor (em especial o Google, chamado com o
+# texto BRUTO) pode devolver esse ponto e o motor o aceitava calado,
+# ENVENENANDO o cache: a chave canonica ignora a cidade, entao o ponto
+# errado passa a servir o endereco de BH pra sempre. Aqui a coord e
+# validada ANTES de ser aceita/cacheada. Raio ajustavel por env.
+BH_CENTRO_LAT = -19.9191
+BH_CENTRO_LNG = -43.9387
+MAX_RAIO_KM = float(os.environ.get("GEOCODE_MAX_RAIO_KM", "80"))
 
 # Cidades da região metropolitana de BH (pra detectar o sufixo do endereço).
 # Lista pequena de propósito — adiciona conforme aparecer endereço de fora.
@@ -585,6 +599,30 @@ def _extrair_bairro_cidade(endereco: str) -> tuple[str | None, str]:
     return bairro, cidade
 
 
+def _dist_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """Distancia aproximada (haversine) em km entre dois pontos."""
+    raio = 6371.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lng2 - lng1)
+    a = (math.sin(dp / 2) ** 2
+         + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2)
+    return 2 * raio * math.asin(min(1.0, math.sqrt(a)))
+
+
+def _coord_plausivel(coord: tuple[float, float] | None) -> bool:
+    """True se a coord esta dentro do raio da RMBH (a partir do centro de
+    BH). Rejeita pontos absurdamente longe — rua homonima em OUTRA cidade
+    (ex.: Divinopolis). None nao e plausivel (quem chama trata antes)."""
+    if not coord:
+        return False
+    try:
+        d = _dist_km(BH_CENTRO_LAT, BH_CENTRO_LNG, float(coord[0]), float(coord[1]))
+    except (TypeError, ValueError):
+        return False
+    return d <= MAX_RAIO_KM
+
+
 def _consultar_em_cascata(endereco: str) -> tuple[float, float] | None:
     """Tenta o endereço em vários provedores até achar uma coordenada.
 
@@ -630,22 +668,31 @@ def _consultar_em_cascata(endereco: str) -> tuple[float, float] | None:
 
     # 1. Nominatim v1 (rua + BAIRRO) — preciso quando o endereço está limpo.
     coord = _tentar_nominatim(nominatim_v1)
-    if coord is not None:
+    if coord is not None and _coord_plausivel(coord):
         return coord
+    if coord is not None:
+        log.warning("geocode Nominatim v1 FORA da RMBH (descartado): %s -> %s",
+                    endereco[:60], coord)
 
     # 2. Google Maps — ANTES da v2 sem bairro: resolve ruído/erro de digitação
     # (ex.: "Drumond" x "Drummond") e NÃO cai em rua homônima. Só com a chave setada.
     if GOOGLE_MAPS_API_KEY:
         coord = _consultar_google_maps(endereco)
-        if coord is not None:
+        if coord is not None and _coord_plausivel(coord):
             log.info("geocode via Google Maps: %s", endereco)
             return coord
+        if coord is not None:
+            log.warning("geocode Google FORA da RMBH (descartado, provavel rua "
+                        "homonima de outra cidade): %s -> %s", endereco[:60], coord)
 
     # 3. Nominatim v2 (rua SEM bairro) — só agora, como fallback (pode cair em rua
     # homônima; por isso vem DEPOIS do Google).
     coord = _tentar_nominatim(nominatim_v2)
-    if coord is not None:
+    if coord is not None and _coord_plausivel(coord):
         return coord
+    if coord is not None:
+        log.warning("geocode Nominatim v2 FORA da RMBH (descartado): %s -> %s",
+                    endereco[:60], coord)
 
     # 3. Nominatim v3 (só CEP) — valida postcode pra evitar fallback BH
     if cep:
@@ -656,14 +703,14 @@ def _consultar_em_cascata(endereco: str) -> tuple[float, float] | None:
             log.warning("Nominatim CEP falhou: %s", e)
             coord = None
         time.sleep(PAUSA_S)
-        if coord is not None:
+        if coord is not None and _coord_plausivel(coord):
             return coord
 
     # 4. BrasilAPI v2 pelo CEP (centroide ~50m)
     # 4. BrasilAPI v2 pelo CEP (centroide ~50m). Sem rate limit.
     if cep:
         coord = _consultar_brasilapi_cep(cep)
-        if coord is not None:
+        if coord is not None and _coord_plausivel(coord):
             log.info("geocode aproximado via CEP (BrasilAPI): %s", endereco)
             return coord
 
@@ -676,7 +723,7 @@ def _consultar_em_cascata(endereco: str) -> tuple[float, float] | None:
             log.warning("Centroide do bairro falhou em %s: %s", bairro, e)
             coord = None
         time.sleep(PAUSA_S)
-        if coord is not None:
+        if coord is not None and _coord_plausivel(coord):
             log.warning("geocode APROXIMADO pelo bairro %s/%s: %s",
                         bairro, cidade, endereco)
             return coord
